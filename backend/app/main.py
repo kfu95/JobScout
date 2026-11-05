@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .db import get_db, init_db
 from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead, now
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
-from .scoring import prepare_packet, load_profile, baseline_score, preference_filter
+from .scoring import prepare_packet, load_profile, score_posting
 from .onboarding import Fact, Preferences, load_facts, save_facts, load_preferences, save_preferences, upload_resume
 from .pdf import packet_pdf
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
@@ -81,20 +81,38 @@ async def resume_upload(file: UploadFile = File(...)):
         raise HTTPException(400, f"Could not extract resume: {e}") from e
 
 @app.put("/api/onboarding/facts/{fact_id}")
-def update_fact(fact_id: str, fact: Fact):
+def update_fact(fact_id: str, fact: Fact, db: Session = Depends(get_db)):
     if fact.id != fact_id:
         raise HTTPException(400, "Fact ID cannot change")
     facts = load_facts(load_profile())
     for index, existing in enumerate(facts):
         if existing["id"] == fact_id:
-            facts[index] = fact.model_dump()
+            updated = fact.model_dump()
+            changed = existing != updated
+            facts[index] = updated
             save_facts(facts)
+            if changed:
+                approved = db.scalars(select(Application).where(Application.status == "approved")).all()
+                for application in approved:
+                    selected = application.packet.get("selected_facts", []) if application.packet else []
+                    if any(selected_fact.get("id") == fact_id for selected_fact in selected):
+                        application.status = "prepared"
+                        application.packet = {}
+                        application.approved_at = None
+                        record_event(db, application, "materials_invalidated", f"Fact {fact_id} changed")
+                db.commit()
             return facts[index]
     raise HTTPException(404, "Fact not found")
 
 @app.put("/api/onboarding/preferences")
-def update_preferences(preferences: Preferences):
+def update_preferences(preferences: Preferences, db: Session = Depends(get_db)):
+    profile = load_profile()
+    preference_data = preferences.model_dump()
+    for job, board in db.execute(select(Job, Board).join(Board, Job.board_id == Board.id)):
+        posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
+        job.score, job.score_reason, job.score_method = score_posting(posting, profile, preference_data)
     save_preferences(preferences)
+    db.commit()
     return preferences
 
 @app.get("/api/health")
@@ -135,21 +153,10 @@ def list_jobs(q: str = "", min_score: int = 0, open_only: bool = True, limit: in
     if q:
         pat = f"%{q[:100]}%"
         stmt = stmt.where((Job.title.ilike(pat)) | (Board.company.ilike(pat)) | (Job.location.ilike(pat)))
-    stmt = stmt.order_by(Job.score.desc(), Job.first_seen.desc())
-    profile = load_profile()
-    preferences = load_preferences(profile)
-    result = []
-    for job, board, application in db.execute(stmt):
-        posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
-        allowed, salary_note = preference_filter(posting, preferences)
-        if allowed:
-            data = serialize_job(job, board, application)
-            data["score"], data["score_reason"], data["score_method"] = baseline_score(posting, profile)
-            data["salary_status"] = salary_note
-            if data["score"] >= min_score:
-                result.append(data)
-    result.sort(key=lambda item: item["score"], reverse=True)
-    return result[:max(1, min(limit, 500))]
+    stmt = (stmt.where(Job.score >= max(1, min_score))
+            .order_by(Job.score.desc(), Job.first_seen.desc())
+            .limit(max(1, min(limit, 500))))
+    return [serialize_job(job, board, application) for job, board, application in db.execute(stmt)]
 
 @app.get("/api/jobs/{job_id}")
 def job_detail(job_id: int, db: Session = Depends(get_db)):
@@ -211,8 +218,8 @@ def decide(job_id: int, payload: DecisionIn, db: Session = Depends(get_db)):
 def reported(job_id: int, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
     row = db.scalar(select(Application).where(Application.job_id == job_id))
-    if not row or row.status != "approved":
-        raise HTTPException(409, "Approve materials before reporting submission")
+    if not row or row.status != "approved" or not row.packet or not packet_is_current(row.packet):
+        raise HTTPException(409, "Approve current materials before reporting submission")
     row.status, row.reported_at = "submission_reported", now()
     record_event(db, row, "submission_reported", "Manually reported; confirmation not verified")
     db.commit()

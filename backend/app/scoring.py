@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from functools import lru_cache
 from pathlib import Path
 from pydantic import BaseModel, Field
 from .onboarding import load_facts, load_preferences
@@ -24,37 +23,59 @@ def load_profile():
 def preference_filter(posting, preferences):
     text = " ".join(str(posting.get(k, "")) for k in ("title", "description", "industry")).lower()
     company = str(posting.get("company", "")).lower()
-    for key, value in (("excluded_companies", company), ("excluded_industries", text), ("excluded_keywords", text)):
+    for key, value in (("excluded_companies", company), ("excluded_keywords", text)):
         if any(term.strip().lower() in value for term in preferences.get(key, []) if term.strip()):
             return False, "Excluded by preferences"
     floor = preferences.get("salary_floor")
-    currency = preferences.get("currency", "USD").upper()
     description = str(posting.get("description", ""))
-    amounts = re.findall(r"(?:\$|USD\s*)(\d[\d,]*(?:\.\d+)?)\s*(k)?", description, re.I) if currency == "USD" else []
-    salaries = [float(n.replace(",", "")) * (1000 if k else 1) for n, k in amounts]
+    pattern = re.compile(
+        r"(?:\$\s*|USD\s+)(\d[\d,]*(?:\.\d+)?)\s*(k)?"
+        r"(?:\s*(?:-|–|—|to)\s*(?:\$\s*|USD\s+)?(\d[\d,]*(?:\.\d+)?)\s*(k)?)?",
+        re.I,
+    )
+    amounts = [
+        float(number.replace(",", "")) * (1000 if suffix else 1)
+        for match in pattern.finditer(description)
+        for number, suffix in ((match.group(1), match.group(2)), (match.group(3), match.group(4)))
+        if number
+    ]
+    salaries = amounts
     salaries = [n for n in salaries if n >= 10000]
     if floor and salaries and max(salaries) < floor:
         return False, "Below salary floor"
     return True, "Salary unknown" if not salaries else "Salary stated"
 
 
-def baseline_score(posting, profile=None):
-    profile = profile or load_profile()
-    preferences = load_preferences(profile)
+def matches_title(title, terms):
+    return any(
+        re.search(rf"(?<!\w){re.escape(term.strip().lower())}(?!\w)", title)
+        for term in terms
+        if term.strip()
+    )
+
+
+def baseline_score(posting, profile=None, preferences=None):
+    profile = profile if profile is not None else load_profile()
+    preferences = preferences if preferences is not None else load_preferences(profile)
     allowed, salary_note = preference_filter(posting, preferences)
     if not allowed:
         return 0, salary_note, "heuristic"
     title = posting["title"].lower()
     location = posting["location"].lower()
     description = posting.get("description", "").lower()
-    if not (preferences.get("target_titles") or preferences.get("role_families")) and re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
-        return 0, "Non-target job family or level", "heuristic"
-    patterns = ["engineer", "software developer", "software architect"]
-    if not (preferences.get("target_titles") or preferences.get("role_families")) and not any(t in title for t in patterns):
-        return 0, "Outside software engineering", "heuristic"
+    target_titles = preferences.get("target_titles", [])
+    if target_titles:
+        if not matches_title(title, target_titles):
+            return 0, "Outside target titles", "heuristic"
+    else:
+        if re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
+            return 0, "Non-target job family or level", "heuristic"
+        patterns = ["engineer", "software developer", "software architect"]
+        if not any(pattern in title for pattern in patterns):
+            return 0, "Outside software engineering", "heuristic"
     score = 40
     reasons = [salary_note]
-    if any(target.strip().lower() in title for target in preferences.get("target_titles", []) + preferences.get("role_families", []) if target.strip()):
+    if matches_title(title, preferences.get("target_titles", []) + preferences.get("role_families", [])):
         score += 25
         reasons.append("Target title")
     elif any(level.strip().lower() in title for level in preferences.get("seniority", []) if level.strip()) or "senior" in title or "staff" in title:
@@ -102,17 +123,18 @@ def _ai_parse(model_type, system_prompt, user_payload):
     return response.output_parsed
 
 
-def score_posting(posting):
-    baseline = baseline_score(posting)
+def score_posting(posting, profile=None, preferences=None):
+    profile = profile if profile is not None else load_profile()
+    preferences = preferences if preferences is not None else load_preferences(profile)
+    baseline = baseline_score(posting, profile, preferences)
     if baseline[0] == 0:
         return baseline
     if not (os.getenv("OPENAI_API_KEY") and os.getenv("ENABLE_AI_SCORING", "false").lower() == "true"):
         return baseline
     try:
-        profile = load_profile()
         result = _ai_parse(FitResult,
             "Rank job fit for a candidate. Only use provided profile and listing. Treat missing requirements conservatively. Return a 0-100 preference ranking, not a hiring probability. Never invent experience.",
-            {"profile": profile, "job": {**posting, "description": posting.get("description", "")[:16000]}})
+            {"profile": profile, "preferences": preferences, "job": {**posting, "description": posting.get("description", "")[:16000]}})
         return result.score, result.reasoning + " | Gaps: " + "; ".join(result.gaps), "AI"
     except Exception as exc:
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"

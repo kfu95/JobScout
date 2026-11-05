@@ -3,8 +3,10 @@ from io import BytesIO
 import pytest
 from docx import Document
 from reportlab.pdfgen import canvas
+from pydantic import ValidationError
 
-from app.onboarding import extract_text, parse_resume, save_facts, load_facts, Preferences
+import app.onboarding as onboarding_store
+from app.onboarding import extract_text, parse_resume, save_facts, load_facts, Preferences, storage_dir
 from app.scoring import prepare_packet, preference_filter
 
 
@@ -52,12 +54,40 @@ def test_preference_exclusions_and_salary():
     assert not preference_filter({"description": "Salary $100,000 - $140,000"}, prefs)[0]
     assert preference_filter({"description": "Salary $120k - $180k"}, prefs)[0]
     assert preference_filter({"description": "No compensation listed"}, prefs) == (True, "Salary unknown")
+    with pytest.raises(ValidationError):
+        Preferences(currency="EUR")
+
+
+def test_private_write_failure_preserves_existing_facts(monkeypatch):
+    original = [{"id": "1", "role": "Engineer", "verified": True}]
+    save_facts(original)
+
+    def fail_replace(source, destination):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(onboarding_store.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="disk unavailable"):
+        save_facts([{"id": "2", "role": "Manager", "verified": False}])
+    assert load_facts({}) == original
+    assert not list(storage_dir().glob(".facts.json.*"))
 
 
 def test_api_upload_review_and_revoke(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app, packet_is_current
+    from app.db import Base, get_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
 
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr("app.main.init_db", lambda: None)
     monkeypatch.setattr("app.main.load_profile", lambda: {"verified_experience": []})
     doc = Document()
@@ -65,14 +95,34 @@ def test_api_upload_review_and_revoke(monkeypatch):
     doc.add_paragraph("• Built services")
     buf = BytesIO()
     doc.save(buf)
-    with TestClient(app) as client:
-        response = client.post("/api/onboarding/resume", files={"file": ("resume.docx", buf.getvalue())})
-        assert response.status_code == 200
-        fact = response.json()["facts"][0]
-        assert not fact["verified"]
-        fact["verified"] = True
-        assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
-        assert packet_is_current({"selected_facts": [fact]})
-        fact["verified"] = False
-        assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
-        assert not packet_is_current({"selected_facts": [{**fact, "verified": True}]})
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/onboarding/resume", files={"file": ("resume.docx", buf.getvalue())})
+            assert response.status_code == 200
+            fact = response.json()["facts"][0]
+            assert not fact["verified"]
+            fact["verified"] = True
+            assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
+            assert packet_is_current({"selected_facts": [fact]})
+
+            second = Document()
+            second.add_paragraph("Staff Engineer | Other Corp 2021 - 2025")
+            second_buffer = BytesIO()
+            second.save(second_buffer)
+            assert client.post("/api/onboarding/resume", files={"file": ("new.docx", second_buffer.getvalue())}).status_code == 200
+
+            third = Document()
+            third.add_paragraph("Principal Engineer | Next Corp 2022 - 2026")
+            third_buffer = BytesIO()
+            third.save(third_buffer)
+            assert client.post("/api/onboarding/resume", files={"file": ("latest.docx", third_buffer.getvalue())}).status_code == 200
+            stored = client.get("/api/onboarding").json()["facts"]
+            assert [(item["company"], item["verified"]) for item in stored] == [("Example Corp", True), ("Next Corp", False)]
+            assert not list(storage_dir().glob("resume.*"))
+
+            fact["verified"] = False
+            assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
+            assert not packet_is_current({"selected_facts": [{**fact, "verified": True}]})
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()

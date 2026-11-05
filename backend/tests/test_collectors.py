@@ -9,7 +9,10 @@ from app.scoring import baseline_score, prepare_packet
 def test_parse_providers():
     assert normalize("greenhouse", {"id": 7, "title": "Senior Engineer", "location": {"name": "NYC"}, "absolute_url": "https://example.com", "content": "<p>Python &amp; React</p>"})["description"] == "Python & React"
     assert normalize("lever", {"id": "a", "text": "Engineer", "categories": {"location": "NYC"}, "descriptionPlain": "Hi", "applyUrl": "https://example.com"})["external_id"] == "a"
-    assert normalize("ashby", {"jobUrl": "https://x/a", "title": "Engineer", "location": "NYC", "descriptionPlain": "Hi", "applyUrl": "https://x/b"})["external_id"] == "https://x/a"
+    ashby = normalize("ashby", {"jobUrl": "https://x/a", "title": "Engineer", "location": "NYC", "descriptionPlain": "Hi", "applyUrl": "https://x/b", "compensation": {"scrapeableCompensationSalarySummary": "$120K - $180K"}})
+    assert ashby["external_id"] == "https://x/a"
+    assert ashby["description"] == "Hi\nCompensation: $120K - $180K"
+    assert content_hash(ashby) != content_hash({**ashby, "description": "Hi\nCompensation: $120K - $160K"})
 
 
 def test_idempotency_versions_closure():
@@ -35,5 +38,7 @@ def test_scoring_and_verified_packets():
                "preferred_locations": ["new york"], "verified_experience": [{"id": "fact1", "role": "Engineer", "company": "Test Co", "bullets": ["Built verified software"]}]}
     score, reason, method = baseline_score({"title": "Senior Backend Engineer", "location": "New York", "description": "Python"}, profile)
     assert score >= 80 and method == "heuristic"
+    assert baseline_score({"title": "Senior Sales Manager", "location": "New York", "description": "Python"}, profile)[0] == 0
+    assert baseline_score({"title": "Senior Backend Engineering Manager", "location": "New York", "description": "Python"}, profile)[0] == 0
     packet = prepare_packet({"title": "Senior Backend Engineer", "company": "A", "location": "New York", "description": "Python"}, profile)
     assert packet["selected_facts"][0]["id"] == "fact1"

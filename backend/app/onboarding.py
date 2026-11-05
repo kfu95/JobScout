@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import tempfile
 import uuid
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,9 +27,8 @@ class Preferences(BaseModel):
     locations: list[str] = Field(default_factory=list)
     work_modes: list[str] = Field(default_factory=list)
     salary_floor: float | None = Field(default=None, ge=0)
-    currency: str = "USD"
+    currency: Literal["USD"] = "USD"
     excluded_companies: list[str] = Field(default_factory=list)
-    excluded_industries: list[str] = Field(default_factory=list)
     excluded_keywords: list[str] = Field(default_factory=list)
 
 
@@ -39,10 +40,28 @@ def storage_dir():
 
 
 def write_private(path, data):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    path.chmod(0o600)
+    path = Path(path)
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    temp_path = Path(temp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            fd = -1
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+        path.chmod(0o600)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_facts(profile):
@@ -115,7 +134,6 @@ def upload_resume(filename, content, profile):
     facts = parse_resume(text)
     if not facts:
         raise ValueError("No career facts recognized; check the resume format")
-    existing = load_facts(profile)
-    write_private(storage_dir() / ("resume" + Path(filename).suffix.lower()), content)
-    save_facts(existing + facts)
+    verified = [fact for fact in load_facts(profile) if fact.get("verified") is True]
+    save_facts(verified + facts)
     return facts

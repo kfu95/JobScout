@@ -10,7 +10,8 @@ import httpx
 from sqlalchemy import select
 
 from .models import JOB_LOCATION_MAX_LENGTH, Board, Job, JobVersion, now
-from .scoring import score_posting
+from .onboarding import load_preferences
+from .scoring import load_profile, score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
 SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,150}$")
@@ -84,6 +85,11 @@ def normalize(provider, item):
             and str(component.get("interval") or "").upper() == "1 YEAR"
             and str(component.get("currencyCode") or "").upper() == "USD"
         ]
+        description = plain(item.get("descriptionPlain") or item.get("descriptionHtml") or "")
+        compensation = item.get("compensation") or {}
+        salary = plain(compensation.get("scrapeableCompensationSalarySummary", "")) if isinstance(compensation, dict) else ""
+        if salary:
+            description = f"{description}\nCompensation: {salary}".strip()
         return {
             "external_id": str(item.get("id") or item.get("jobUrl") or item["applyUrl"]),
             "title": item.get("title", ""),
@@ -91,7 +97,7 @@ def normalize(provider, item):
                 [item.get("location"), *[location.get("location") for location in item.get("secondaryLocations") or []]],
                 item.get("workplaceType"),
             ),
-            "description": plain(item.get("descriptionPlain") or item.get("descriptionHtml") or ""),
+            "description": description,
             "apply_url": item.get("applyUrl") or item.get("jobUrl") or "",
             "salary_max": positive_max(annual_usd_salary),
         }
@@ -150,8 +156,12 @@ def persist_snapshot(
     close_missing=True,
     existing_urls=None,
     observed_external_ids=None,
+    profile=None,
+    preferences=None,
 ):
     """Apply a COMPLETE successful snapshot. Failed fetches must never close jobs."""
+    profile = profile if profile is not None else load_profile()
+    preferences = preferences if preferences is not None else load_preferences(profile)
     unique_postings = {p["external_id"]: p for p in postings if p.get("title") and p.get("apply_url")}
     if observed_external_ids is None:
         observed_external_ids = set(unique_postings)
@@ -182,7 +192,7 @@ def persist_snapshot(
                 job.missing_count = 0
             continue
         if job is None:
-            score, reason, method = score_posting({**p, "company": board.company})
+            score, reason, method = score_posting({**p, "company": board.company}, profile, preferences)
             job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=location,
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
                       score=score, score_reason=reason, score_method=method)
@@ -199,7 +209,7 @@ def persist_snapshot(
                 old_url = canonical_url(job.apply_url)
                 job.title, job.location, job.description = p["title"], location, p["description"]
                 job.apply_url, job.hash = p["apply_url"], digest
-                job.score, job.score_reason, job.score_method = score_posting({**p, "company": board.company})
+                job.score, job.score_reason, job.score_method = score_posting({**p, "company": board.company}, profile, preferences)
                 if existing_urls.get(old_url) == job.id:
                     del existing_urls[old_url]
                 db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))
@@ -225,6 +235,8 @@ async def collect_all(db):
     from .models import DiscoveryState
     from .preferences import discovery_preferences, matches
     preferences = discovery_preferences()
+    profile = load_profile()
+    scoring_preferences = load_preferences(profile)
     results = []
     async with httpx.AsyncClient(timeout=25, follow_redirects=False, headers={"Accept": "application/json", "User-Agent": "PersonalJobTracker/0.1"}) as client:
         try:
@@ -253,6 +265,8 @@ async def collect_all(db):
                     eligible,
                     existing_urls=existing_urls,
                     observed_external_ids=observed_ids,
+                    profile=profile,
+                    preferences=scoring_preferences,
                 )
                 results.append({"company": board.company, "provider": board.provider, "ok": True, **stats})
             except Exception as e:
