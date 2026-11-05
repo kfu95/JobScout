@@ -71,3 +71,22 @@ class Lead(Base):
     company: Mapped[str] = mapped_column(String(200), default="")
     url: Mapped[str] = mapped_column(Text, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class GmailMessage(Base):
+    __tablename__ = "gmail_messages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider_message_id: Mapped[str] = mapped_column(String(255), unique=True)
+    rfc_message_id: Mapped[str | None] = mapped_column(Text)
+    thread_id: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(32), default="gmail")
+    subject: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    snippet: Mapped[str] = mapped_column(String(500), default="")
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    classification_status: Mapped[str] = mapped_column(String(32), default="pending")
+
+class GmailSyncState(Base):
+    __tablename__ = "gmail_sync_state"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    history_id: Mapped[str] = mapped_column(String(255))
+    filter_hash: Mapped[str] = mapped_column(String(64))

@@ -133,3 +133,11 @@ See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail OAu
 - Lever: https://github.com/lever/postings-api
 - Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api
 - OpenAI structured output: https://developers.openai.com/api/docs/guides/structured-outputs
+
+### Gmail read-only ingestion
+
+Create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen and add your Google account as a test user if the app is in testing. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `config/gmail/client_secret.json`. Keep this file private. Create the directory with `mkdir -p config/gmail && chmod 700 config/gmail` before starting Docker Compose. The Compose API disables access logs to avoid logging OAuth callback codes. The API and worker share this directory; the refresh token is stored there in a user-restricted file excluded from Git.
+
+Set `GMAIL_QUERY` and/or `GMAIL_LABELS` in `.env` before starting Compose. Labels are comma-separated Gmail label IDs; a query uses Gmail search syntax. Both filters apply when both are present. For example, `GMAIL_QUERY=from:(jobalerts-noreply@linkedin.com)` limits ingestion to that sender. Configure filters carefully because matching message metadata and a short snippet are stored in the database. Raw message bodies and attachments are not retained.
+
+Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to the local API callback. Check `GET /api/gmail/status` and trigger a sync with `POST /api/gmail/sync`. The worker also polls on `POLL_SECONDS`. Sync uses Gmail history and falls back to a full filtered scan when the cursor expires or filters change. Filtered message IDs are listed on each poll so query and label membership can be checked; only new matching messages are fetched. Reconnect if credentials are revoked or expired. This local API has no authentication and must not be exposed publicly without the protections described above.
