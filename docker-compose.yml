@@ -21,10 +21,14 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}
+      GMAIL_CREDENTIAL_DIR: /gmail
+      GMAIL_QUERY: ${GMAIL_QUERY:-}
+      GMAIL_LABELS: ${GMAIL_LABELS:-}
       PROFILE_PATH: /config/profile.json
       CORS_ORIGINS: http://localhost:3000
     volumes:
       - ./config:/config:ro
+      - ./config/gmail:/gmail
     depends_on:
       db:
         condition: service_healthy
@@ -40,10 +44,14 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}
+      GMAIL_CREDENTIAL_DIR: /gmail
+      GMAIL_QUERY: ${GMAIL_QUERY:-}
+      GMAIL_LABELS: ${GMAIL_LABELS:-}
       PROFILE_PATH: /config/profile.json
       POLL_SECONDS: ${POLL_SECONDS:-7200}
     volumes:
       - ./config:/config:ro
+      - ./config/gmail:/gmail
     depends_on:
       db:
         condition: service_healthy

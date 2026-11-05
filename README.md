@@ -14,7 +14,7 @@ bash setup.sh
 
 Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
 
-`setup.sh` generates a local database password and copies `config/profile.example.json` to `config/profile.json`. Both are excluded from Git. **Update the profile with verified facts before preparing application packets.** Restart the API/worker after editing the profile if you modify environment variables; the profile JSON itself is read on each scoring/preparation request.
+`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates the user-restricted Gmail credential directory before starting Compose. The generated files are excluded from Git. **Update the profile with verified facts before preparing application packets.** Run `docker compose up -d --force-recreate api worker` after changing environment variables; the profile JSON itself is read on each scoring/preparation request.
 
 ## Add your first source
 
@@ -90,9 +90,9 @@ Cost and access depend on your API account/model. The code uses structured outpu
 
 ## Included / not included
 
-**Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; manual submission status and evidence note; periodic polling; tests.
+**Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
 
-**Not yet integrated:** LinkedIn or Built In **automatic email-alert ingestion**; Gmail OAuth inbox sync; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
+**Not yet integrated:** LinkedIn or Built In email-alert parsing and job extraction; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
 
 ## Security and operations
 
@@ -109,7 +109,7 @@ Cost and access depend on your API account/model. The code uses structured outpu
 ```bash
 docker compose ps
 docker compose logs -f api worker web
-docker compose restart api worker
+docker compose up -d --force-recreate api worker
 docker compose down
 ```
 
@@ -125,7 +125,7 @@ pytest -q
 
 ## Next implementation phase
 
-See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail OAuth alert ingestion, recruiter tracking, cross-source deduplication, resume templates, and production hardening.
+See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail alert parsing, recruiter tracking, cross-source deduplication, resume templates, and production hardening.
 
 ## Reference documentation
 
@@ -133,3 +133,11 @@ See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail OAu
 - Lever: https://github.com/lever/postings-api
 - Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api
 - OpenAI structured output: https://developers.openai.com/api/docs/guides/structured-outputs
+
+### Gmail read-only ingestion
+
+Create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen and add your Google account as a test user if the app is in testing. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `config/gmail/client_secret.json`. Keep this file private. `setup.sh` creates the credential directory with user-only permissions; before starting Compose manually, run `mkdir -p config/gmail && chmod 700 config/gmail`. The Compose API disables access logs to avoid logging OAuth callback codes. The API and worker share this directory; the refresh token is stored there in a user-restricted file excluded from Git.
+
+Set `GMAIL_QUERY` and/or `GMAIL_LABELS` in `.env` before starting Compose. If the services are already running, apply these values with `docker compose up -d --force-recreate api worker`. Labels are comma-separated Gmail label IDs; a query uses Gmail search syntax. Both filters apply when both are present. For example, `GMAIL_QUERY=from:(jobalerts-noreply@linkedin.com)` limits ingestion to that sender. Filters targeting Spam, Trash, or `in:anywhere` are rejected, and a label-only preflight excludes Spam and Trash before fetching message metadata or snippets. Time-relative operators such as `after:`, `before:`, `older:`, `newer:`, `older_than:`, and `newer_than:` are unsupported because incremental sync only processes new mailbox events. Configure filters carefully because matching message metadata and a short snippet are stored in the database. Raw message bodies and attachments are not retained.
+
+Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to `http://127.0.0.1:8000/`. The credential directory is bound to the first authorized mailbox; reconnecting the same mailbox is supported, while authorizing a different mailbox is rejected to protect existing messages and sync state. Check `GET /api/gmail/status` and trigger a sync manually with `POST /api/gmail/sync`. The worker runs Gmail sync daily at approximately 06:00 America/New_York and follows daylight saving time; `POLL_SECONDS` continues to control only ATS collection. Gmail performs a full filtered scan on first sync or when the history cursor expires. Otherwise it processes only new messages reported by Gmail history, including after filter changes, so changing filters does not backfill older mail. Query candidates are checked with narrowly time-bounded Gmail searches, while labels are checked from message metadata. Reconnect the same mailbox if credentials are revoked or expired. This integration is verified with mocked Gmail responses, not a live Google account. This local API has no authentication and must not be exposed publicly without the protections described above.

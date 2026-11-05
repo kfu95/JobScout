@@ -12,6 +12,7 @@ from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead,
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
 from .scoring import prepare_packet
 from .pdf import packet_pdf
+from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 
 @asynccontextmanager
 async def lifespan(app):
@@ -19,6 +20,8 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="Job Agent API", version="0.1.0", lifespan=lifespan)
+app.include_router(gmail_callback_router)
+app.include_router(gmail_router)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
