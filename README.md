@@ -14,7 +14,7 @@ bash setup.sh
 
 Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
 
-`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates the user-restricted Gmail credential directory before starting Compose. The generated files are excluded from Git. **Update the profile with verified facts before preparing application packets.** Run `docker compose up -d --force-recreate api worker` after changing environment variables; the profile JSON itself is read on each scoring/preparation request.
+`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates the user-restricted Gmail credential directory before starting Compose. The generated files are excluded from Git. Upload a resume and verify its extracted facts in the dashboard before preparing application packets. Run `docker compose up -d --force-recreate api worker` after changing environment variables; profile identity and skills are read on each scoring/preparation request.
 
 ## Discover jobs
 
@@ -41,9 +41,9 @@ curl 'http://localhost:8000/api/jobs?min_score=80'
 
 The company above is **illustrative**; replace it with a verified board token.
 
-## Career-facts JSON
+## Profile JSON and first-use fact seed
 
-Edit `config/profile.json`. Add facts with stable IDs; the PDF generator uses those exact fact strings, not AI-invented achievements.
+Edit `config/profile.json` for identity, skills, and initial title and location defaults. Its `verified_experience` list is an optional one-time seed imported only when `config/onboarding/facts.json` is first created. After that, upload, edit, and verify career facts in the dashboard; later profile fact edits do not change the onboarding fact store. The PDF generator uses the verified onboarding facts exactly, not AI-invented achievements.
 
 ```json
 {
@@ -157,6 +157,6 @@ Deferred: concurrent collection coordination across API and worker, more complet
 
 ### Resume and preferences
 
-Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported on first use. The source document is discarded after extraction. Facts and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
+Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported only when the onboarding fact store is first created. The source document is discarded after extraction. Facts and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
 
-Preferences affect stored job scores immediately. Company and keyword exclusions and a stated salary below the annual USD floor remove matches. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus Ashby's structured annual salary summary; it does not treat stipends, bonuses, equity, hourly rates, or unlabeled amounts as annual salary. Review compensation in the original listing.
+Preferences affect stored job scores immediately. Company and keyword exclusions and a stated salary below the annual USD floor remove matches. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus Ashby's structured annual USD salary components; it does not treat foreign currencies, stipends, bonuses, equity, nonannual rates, or unlabeled amounts as annual salary. Review compensation in the original listing.

@@ -146,7 +146,14 @@ def extract_text(filename, content):
         return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages)
     if suffix == ".docx":
         from docx import Document
-        return "\n".join(p.text for p in Document(BytesIO(content)).paragraphs)
+        lines = []
+        for paragraph in Document(BytesIO(content)).paragraphs:
+            text = paragraph.text
+            style = paragraph.style.name if paragraph.style else ""
+            if text and style.casefold().startswith("list") and not re.match(r"^[•●▪*\-]", text):
+                text = "• " + text
+            lines.append(text)
+        return "\n".join(lines)
     raise ValueError("Upload a PDF or DOCX resume")
 
 
@@ -166,7 +173,8 @@ def parse_resume(text):
             current = None
             continue
         if "skills" in section:
-            skills = [s.strip() for s in re.split(r"[,;|]", line) if s.strip()]
+            skill_line = re.sub(r"^[•●▪*\-]\s*", "", line)
+            skills = [s.strip() for s in re.split(r"[,;|]", skill_line) if s.strip()]
             if skills:
                 facts.append(Fact(id=str(uuid.uuid4()), skills=skills).model_dump())
             continue

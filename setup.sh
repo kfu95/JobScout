@@ -30,13 +30,13 @@ fi
 if [[ ! -f config/profile.json ]]; then
   cp config/profile.example.json config/profile.json
   chmod 600 config/profile.json
-  echo 'Created config/profile.json; edit with your verified career facts before preparing resumes.'
+  echo 'Created config/profile.json; update identity and skills there if needed.'
 fi
 mkdir -p config/gmail config/onboarding
 chmod 700 config/gmail config/onboarding
 
 docker compose up --build -d
 printf '\nDashboard: http://localhost:3000\nAPI docs:  http://localhost:8000/docs\n\n'
-echo 'Next: add ATS board slugs in the dashboard, click Run collectors now, and update config/profile.json.'
+echo 'Next: upload a resume, verify its facts, set preferences, and run job collection in the dashboard.'
 echo 'To stop: docker compose down'
 echo 'To view logs: docker compose logs -f api worker web'

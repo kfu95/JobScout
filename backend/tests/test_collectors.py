@@ -13,11 +13,20 @@ from app.scoring import baseline_score, prepare_packet, score_posting
 def test_parse_providers():
     assert normalize("greenhouse", {"id": 7, "title": "Senior Engineer", "location": {"name": "NYC"}, "absolute_url": "https://example.com", "content": "<p>Python &amp; React</p>"})["description"] == "Python & React"
     assert normalize("lever", {"id": "a", "text": "Engineer", "categories": {"location": "NYC"}, "descriptionPlain": "Hi", "applyUrl": "https://example.com"})["external_id"] == "a"
-    ashby = normalize("ashby", {"jobUrl": "https://x/a", "title": "Engineer", "location": "NYC", "workplaceType": "Hybrid", "isRemote": True, "descriptionPlain": "Hi", "applyUrl": "https://x/b", "compensation": {"scrapeableCompensationSalarySummary": "$120K - $180K"}})
+    compensation = {
+        "scrapeableCompensationSalarySummary": "$20K - $180K",
+        "summaryComponents": [
+            {"compensationType": "Salary", "interval": "1 MONTH", "currencyCode": "USD", "minValue": 20000, "maxValue": 30000},
+            {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "SGD", "minValue": 120000, "maxValue": 140000},
+            {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD", "minValue": 120000, "maxValue": 180000},
+        ],
+    }
+    ashby = normalize("ashby", {"jobUrl": "https://x/a", "title": "Engineer", "location": "NYC", "workplaceType": "Hybrid", "isRemote": True, "descriptionPlain": "Hi", "applyUrl": "https://x/b", "compensation": compensation})
     assert ashby["external_id"] == "https://x/a"
     assert ashby["location"] == "NYC / Hybrid"
-    assert ashby["description"] == "Hi\nAnnual salary: $120K - $180K"
-    assert content_hash(ashby) != content_hash({**ashby, "description": "Hi\nAnnual salary: $120K - $160K"})
+    assert ashby["description"] == "Hi\nAnnual USD salary: $120,000 - $180,000"
+    assert content_hash(ashby) != content_hash({**ashby, "description": "Hi\nAnnual USD salary: $120,000 - $160,000"})
+    assert normalize("ashby", {"jobUrl": "https://x/monthly", "title": "Engineer", "descriptionPlain": "Hi", "compensation": {"summaryComponents": compensation["summaryComponents"][:2]}})["description"] == "Hi"
 
 
 def test_idempotency_versions_closure():
@@ -79,6 +88,22 @@ def test_ai_scoring_preserves_selected_seniority(monkeypatch):
     staff = score_posting({"title": "Staff Software Engineer", "location": "", "description": ""}, profile, preferences)
     assert plain[0] == 60 and plain[2] == "AI"
     assert staff[0] == plain[0] + 15 and staff[2] == "AI"
+
+
+def test_allowed_ai_score_reserves_zero_for_hard_filters(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ENABLE_AI_SCORING", "true")
+    monkeypatch.setattr(
+        scoring,
+        "_ai_parse",
+        lambda *args, **kwargs: scoring.FitResult(score=0, reasoning="Low fit", strengths=[], gaps=[]),
+    )
+    preferences = Preferences(target_titles=["software engineer"]).model_dump()
+    profile = {"skills": []}
+    allowed = score_posting({"title": "Software Engineer", "location": "", "description": ""}, profile, preferences)
+    rejected = score_posting({"title": "Sales Manager", "location": "", "description": ""}, profile, preferences)
+    assert allowed[0] == 1 and allowed[2] == "AI"
+    assert rejected[0] == 0 and rejected[2] == "heuristic"
 
 
 def test_collection_uses_preferences_current_after_fetch(monkeypatch):

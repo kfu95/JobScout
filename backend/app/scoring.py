@@ -19,7 +19,10 @@ USD_RANGE_PATTERN = re.compile(
 SALARY_CONTEXT_PATTERN = re.compile(r"\b(?:salary|base[\s-]+pay|pay[\s-]+range|compensation[\s-]+range)\b", re.I)
 NON_SALARY_PATTERN = re.compile(r"\b(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
 SALARY_SUFFIX_PATTERN = re.compile(r"\s*(?:per year|annually)?\s*(?:annual\s+)?(?:base\s+salary|salary\s+range|base[\s-]+pay|pay[\s-]+range)\b", re.I)
-FOREIGN_CURRENCY_PATTERN = re.compile(r"\b(?:CAD|AUD|NZD|EUR|GBP|CHF|JPY|CNY|INR)\b|\b(?:CA|AU|NZ)\s*\$", re.I)
+FOREIGN_DOLLAR_PREFIX_PATTERN = re.compile(r"\b(?:CA|AU|NZ)\s*\$", re.I)
+FOREIGN_CODE_BEFORE_PATTERN = re.compile(r"\b(?!USD\b)[A-Z]{3}\s*(?::\s*)?$")
+FOREIGN_CODE_AFTER_PATTERN = re.compile(r"^\s*[([]?\s*(?!USD\b)[A-Z]{3}\b")
+FOREIGN_CODE_LABEL_PATTERN = re.compile(r"\b(?i:currency|in)\s*:?\s*(?!USD\b)[A-Z]{3}\b")
 NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
 COMPANY_SUFFIXES = {"co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"}
 
@@ -58,7 +61,15 @@ def stated_salaries(description):
 
 def annual_usd_amount(description, start, end):
     context = description[max(0, start - 40):end + 40]
-    return not FOREIGN_CURRENCY_PATTERN.search(context) and not NON_ANNUAL_PERIOD_PATTERN.search(context)
+    before = description[max(0, start - 40):start]
+    after = description[end:end + 40]
+    return not any(pattern.search(value) for pattern, value in (
+        (FOREIGN_DOLLAR_PREFIX_PATTERN, context),
+        (FOREIGN_CODE_BEFORE_PATTERN, before),
+        (FOREIGN_CODE_AFTER_PATTERN, after),
+        (FOREIGN_CODE_LABEL_PATTERN, before),
+        (NON_ANNUAL_PERIOD_PATTERN, context),
+    ))
 
 
 def normalize_company(value):
@@ -74,7 +85,7 @@ def preference_filter(posting, preferences):
     excluded_companies = {normalize_company(term) for term in preferences.get("excluded_companies", [])}
     if company and company in excluded_companies:
         return False, "Excluded by preferences"
-    if any(term.strip().lower() in text for term in preferences.get("excluded_keywords", []) if term.strip()):
+    if matches_phrase(text, preferences.get("excluded_keywords", [])):
         return False, "Excluded by preferences"
     floor = preferences.get("salary_floor")
     description = str(posting.get("description", ""))
@@ -182,7 +193,7 @@ def score_posting(posting, profile=None, preferences=None):
         reasoning = result.reasoning + " | Gaps: " + "; ".join(result.gaps)
         if boost:
             reasoning += " | Selected seniority boost"
-        return min(100, result.score + boost), reasoning, "AI"
+        return max(1, min(100, result.score + boost)), reasoning, "AI"
     except Exception as exc:
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"
 
@@ -191,10 +202,10 @@ def prepare_packet(posting, profile=None):
     profile = profile or load_profile()
     facts = [f for f in load_facts(profile) if f.get("verified") is True]
     if not facts:
-        raise ValueError("Fill config/profile.json verified_experience before generating applications")
+        raise ValueError("Upload a resume and verify at least one career fact in onboarding before generating applications")
     valid = {str(f["id"]): f for f in facts if f.get("id")}
     if not valid:
-        raise ValueError("Each verified_experience item needs an id")
+        raise ValueError("Each verified onboarding fact needs an id")
     selected_ids = list(valid.keys())[:8]
     draft = "Draft a company-specific answer here after reviewing the posting and verified achievements."
     notes = ["Confirm dates, metrics, eligibility and every application answer before submission."]

@@ -17,10 +17,12 @@ def local_store(tmp_path, monkeypatch):
 
 
 def test_synthetic_documents():
-    lines = ["Experience", "Engineer | Example Corp Jan 2020 - Mar 2024", "• Built reliable services", "Skills", "Python, SQL"]
     doc = Document()
-    for line in lines:
-        doc.add_paragraph(line)
+    doc.add_paragraph("Experience")
+    doc.add_paragraph("Engineer | Example Corp Jan 2020 - Mar 2024")
+    doc.add_paragraph("Built reliable services", style="List Bullet")
+    doc.add_paragraph("Skills")
+    doc.add_paragraph("Python, SQL", style="List Bullet")
     buf = BytesIO()
     doc.save(buf)
     facts = parse_resume(extract_text("resume.docx", buf.getvalue()))
@@ -55,6 +57,8 @@ def test_preference_exclusions_and_salary():
     prefs = Preferences(salary_floor=150000, excluded_companies=["Bad Co"], excluded_keywords=["blockchain"]).model_dump()
     assert not preference_filter({"company": "Bad Co"}, prefs)[0]
     assert not preference_filter({"description": "Blockchain"}, prefs)[0]
+    assert preference_filter({"title": "Software Engineer", "description": "Paid time off"}, Preferences(excluded_keywords=["AI"]).model_dump())[0]
+    assert not preference_filter({"title": "AI Software Engineer"}, Preferences(excluded_keywords=["AI"]).model_dump())[0]
     assert not preference_filter({"description": "Salary $100,000 - $140,000"}, prefs)[0]
     assert not preference_filter({"description": "Base salary $140,000 plus equity grant $200,000"}, prefs)[0]
     assert preference_filter({"description": "Salary $120k - $180k"}, prefs)[0]
@@ -68,6 +72,7 @@ def test_preference_exclusions_and_salary():
     assert preference_filter({"description": "Compensation range: $190,000-$220,000 CAD"}, usd_prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Salary: $20,000 per month"}, usd_prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Salary: $190,000-$220,000 USD"}, usd_prefs) == (True, "Salary stated")
+    assert preference_filter({"description": "Salary: $190,000-$220,000 SGD"}, usd_prefs) == (True, "Salary unknown")
     with pytest.raises(ValidationError):
         Preferences(currency="EUR")
 

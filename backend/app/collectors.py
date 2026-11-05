@@ -50,6 +50,36 @@ def persisted_location(value):
     return value[:JOB_LOCATION_MAX_LENGTH - 3] + "..."
 
 
+def salary_amount(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    return f"${value:,.2f}".rstrip("0").rstrip(".")
+
+
+def ashby_annual_usd_salaries(compensation):
+    if not isinstance(compensation, dict):
+        return []
+    components = list(compensation.get("summaryComponents") or [])
+    for tier in compensation.get("compensationTiers") or []:
+        if isinstance(tier, dict):
+            components.extend(tier.get("components") or [])
+    salaries = []
+    seen = set()
+    for component in components:
+        if not isinstance(component, dict) or component.get("compensationType") != "Salary":
+            continue
+        if component.get("interval") != "1 YEAR" or component.get("currencyCode") != "USD":
+            continue
+        minimum = salary_amount(component.get("minValue"))
+        maximum = salary_amount(component.get("maxValue"))
+        values = tuple(value for value in (minimum, maximum) if value)
+        if not values or values in seen:
+            continue
+        seen.add(values)
+        salaries.append(" - ".join(values))
+    return salaries
+
+
 def normalize(provider, item):
     if provider == "greenhouse":
         return {
@@ -86,10 +116,10 @@ def normalize(provider, item):
             and str(component.get("currencyCode") or "").upper() == "USD"
         ]
         description = plain(item.get("descriptionPlain") or item.get("descriptionHtml") or "")
-        compensation = item.get("compensation") or {}
-        salary = plain(compensation.get("scrapeableCompensationSalarySummary", "")) if isinstance(compensation, dict) else ""
-        if salary:
-            description = f"{description}\nAnnual salary: {salary}".strip()
+        salaries = ashby_annual_usd_salaries(item.get("compensation"))
+        if salaries:
+            salary_text = "\n".join(f"Annual USD salary: {salary}" for salary in salaries)
+            description = f"{description}\n{salary_text}".strip()
         return {
             "external_id": str(item.get("id") or item.get("jobUrl") or item["applyUrl"]),
             "title": item.get("title", ""),
