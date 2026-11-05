@@ -1,0 +1,10 @@
+{
+  "name": "REPLACE WITH YOUR NAME",
+  "email": "",
+  "location": "New York, NY",
+  "summary": "Senior software engineer with product engineering experience.",
+  "skills": ["Python", "TypeScript", "React", "Swift", "GraphQL", "PostgreSQL", "Redis", "Kafka"],
+  "target_titles": ["senior software engineer", "senior backend engineer", "senior full-stack engineer", "senior growth engineer", "senior product engineer"],
+  "preferred_locations": ["new york", "nyc", "brooklyn", "manhattan", "remote"],
+  "verified_experience": []
+}

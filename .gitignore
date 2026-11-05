@@ -1,0 +1,10 @@
+.env
+config/profile.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.next/
+node_modules/
+*.db
+.DS_Store
+.venv/

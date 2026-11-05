@@ -1,0 +1,135 @@
+# Job Agent — local, review-before-submit MVP
+
+A working starter for **public ATS job discovery → deduplication/versioning → scoring → fact-verified application packet → manual approval and submission tracking**.
+
+## Run on macOS, Linux, or Windows with WSL
+
+Prerequisites: Docker Desktop or Docker Engine with Compose v2, and `openssl` available on your terminal.
+
+```bash
+unzip job-agent-starter.zip
+cd job-agent-starter
+bash setup.sh
+```
+
+Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
+
+`setup.sh` generates a local database password and copies `config/profile.example.json` to `config/profile.json`. Both are excluded from Git. **Update the profile with verified facts before preparing application packets.** Restart the API/worker after editing the profile if you modify environment variables; the profile JSON itself is read on each scoring/preparation request.
+
+## Add your first source
+
+In the UI, enter the company, ATS provider, and the company's board token from its public careers URL:
+
+- Greenhouse: `https://job-boards.greenhouse.io/BOARD_TOKEN` or `https://boards.greenhouse.io/BOARD_TOKEN`
+- Lever: `https://jobs.lever.co/BOARD_TOKEN`
+- Ashby: `https://jobs.ashbyhq.com/BOARD_TOKEN`
+
+Then click **Run collectors now**. The separate worker will poll configured boards every two hours by default. Public API read requests are authenticated by neither the user nor the employer; some boards may block access or have special formats.
+
+You can also add boards by API:
+
+```bash
+curl -X POST http://localhost:8000/api/boards \
+  -H 'Content-Type: application/json' \
+  -d '{"company":"Example","provider":"ashby","slug":"example"}'
+
+curl -X POST http://localhost:8000/api/collect
+curl 'http://localhost:8000/api/jobs?min_score=80'
+```
+
+The company above is **illustrative**; replace it with a verified board token.
+
+## Career-facts JSON
+
+Edit `config/profile.json`. Add facts with stable IDs; the PDF generator uses those exact fact strings, not AI-invented achievements.
+
+```json
+{
+  "name": "Your Name",
+  "email": "you@example.com",
+  "location": "New York, NY",
+  "summary": "Your verified one-line professional summary.",
+  "skills": ["Python", "TypeScript", "React"],
+  "target_titles": ["senior software engineer", "senior backend engineer"],
+  "preferred_locations": ["new york", "nyc", "remote"],
+  "verified_experience": [
+    {
+      "id": "project-001",
+      "company": "Your Actual Employer",
+      "role": "Your Real Title",
+      "dates": "Exact Employment Dates",
+      "bullets": ["An accomplishment you can verify with the accurate metrics, if any."]
+    }
+  ]
+}
+```
+
+## AI configuration (optional)
+
+Without an OpenAI API key, **scoring is rule-based**, and packet creation selects verified facts deterministically. This remains usable without any paid AI service.
+
+To generate AI-assisted packet drafts and optionally AI job-fit scoring:
+
+1. Put `OPENAI_API_KEY=...` in `.env`.
+2. Leave `ENABLE_AI_SCORING=false` initially to avoid calling the model for every newly discovered job. Packet generation will still call the model when a key exists.
+3. To turn on AI scoring for subsequently added/changed jobs, set `ENABLE_AI_SCORING=true` and run `docker compose up -d --force-recreate api worker`.
+4. `OPENAI_MODEL` defaults to `gpt-4o-mini` and can be changed to an available compatible model.
+
+Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile unless you have reviewed data handling requirements.
+
+## Review-before-submit workflow
+
+1. Browse jobs and select a match.
+2. Click **Prepare packet** (requires at least one verified career fact).
+3. Review the selected experience and the draft answer, and download the PDF.
+4. Click **Approve materials**; this does **not** submit an application.
+5. Open the employer's application and submit it personally; you may use a separate form-autofill extension if permitted.
+6. Click **I submitted (unverified)**, then **Confirm with receipt** when you have evidence.
+
+`/api/jobs/{id}/status` can move confirmed applications into interview/rejected/withdrawn states. Application events are recorded.
+
+## Included / not included
+
+**Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; manual submission status and evidence note; periodic polling; tests.
+
+**Not yet integrated:** LinkedIn or Built In **automatic email-alert ingestion**; Gmail OAuth inbox sync; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
+
+## Security and operations
+
+- Both HTTP ports are bound to `127.0.0.1` in `docker-compose.yml`. The API has **no authentication** and must not be publicly deployed as written.
+- Keep `.env` and `config/profile.json` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
+- Postgres persists in the `pgdata` Docker volume. `docker compose down` keeps the volume; `docker compose down -v` destroys it.
+- Read-only ATS polling uses exact allowlisted HTTPS hosts and validated board slugs. No arbitrary URL fetch or application POST is performed.
+- Jobs from different ATS boards are **not yet merged** automatically. Within-board duplicate ingestion is prevented with a uniqueness constraint.
+- The current schema is created automatically on startup (`create_all`) and is a starter only: add Alembic migrations before changing schema in production.
+- OpenAI key changes require container recreation: `docker compose up -d --force-recreate api worker`.
+
+### Useful commands
+
+```bash
+docker compose ps
+docker compose logs -f api worker web
+docker compose restart api worker
+docker compose down
+```
+
+### Run backend tests locally
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest -q
+```
+
+## Next implementation phase
+
+See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail OAuth alert ingestion, recruiter tracking, cross-source deduplication, resume templates, and production hardening.
+
+## Reference documentation
+
+- Greenhouse: https://docs.greenhouse.io/job-board
+- Lever: https://github.com/lever/postings-api
+- Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api
+- OpenAI structured output: https://developers.openai.com/api/docs/guides/structured-outputs
