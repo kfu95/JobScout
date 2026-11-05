@@ -20,6 +20,9 @@ def directory():
 def token_path():
     return directory() / "token.json"
 
+def mailbox_path():
+    return directory() / "mailbox"
+
 def new_flow(state=None):
     try:
         return Flow.from_client_secrets_file(
@@ -29,17 +32,40 @@ def new_flow(state=None):
     except (OSError, ValueError) as exc:
         raise GmailAuthError("Gmail desktop client configuration is missing or invalid") from exc
 
-def save_credentials(credentials):
-    path = token_path()
+def atomic_write(path, value, prefix):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".token-")
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=prefix)
     try:
         with os.fdopen(fd, "w") as stream:
-            stream.write(credentials.to_json())
+            stream.write(value)
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+def save_credentials(credentials):
+    atomic_write(token_path(), credentials.to_json(), ".token-")
+
+def mailbox_needs_binding(email):
+    try:
+        existing = mailbox_path().read_text().strip()
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        raise GmailAuthError("Gmail mailbox identity cannot be read") from exc
+    if not existing:
+        raise GmailAuthError("Gmail mailbox identity is invalid")
+    if existing.casefold() != email.casefold():
+        raise GmailAuthError(
+            "Gmail is already connected to a different mailbox; account switching is not supported"
+        )
+    return False
+
+def save_mailbox(email):
+    email = email.strip()
+    if not email:
+        raise GmailAuthError("Google did not identify the Gmail mailbox")
+    atomic_write(mailbox_path(), email + "\n", ".mailbox-")
 
 def load_credentials():
     try:

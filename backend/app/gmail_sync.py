@@ -10,7 +10,13 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from sqlalchemy import select
 
-from .gmail_auth import directory, load_credentials
+from .gmail_auth import (
+    GmailAuthError,
+    directory,
+    load_credentials,
+    mailbox_needs_binding,
+    save_mailbox,
+)
 from .models import GmailMessage, GmailSyncState
 
 SPAM_TRASH_QUERY = re.compile(
@@ -89,10 +95,16 @@ def _sync(db, query, labels, reconcile_seconds):
     messages = users.messages()
     filter_hash = hashlib.sha256(json.dumps([query, sorted(labels)]).encode()).hexdigest()
     include_spam_trash = spam_trash_requested(query, labels)
-    state = db.get(GmailSyncState, 1)
     try:
         # Capture the watermark before listing, so changes during listing are replayed.
-        watermark = users.getProfile(userId="me").execute()["historyId"]
+        profile = users.getProfile(userId="me").execute()
+        email = profile.get("emailAddress", "").strip()
+        if not email:
+            raise GmailAuthError("Google did not identify the Gmail mailbox")
+        if mailbox_needs_binding(email):
+            save_mailbox(email)
+        watermark = profile["historyId"]
+        state = db.get(GmailSyncState, 1)
         candidates = None
         if state and state.filter_hash == filter_hash and not reconciliation_due(reconcile_seconds):
             try:

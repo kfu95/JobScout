@@ -2,16 +2,35 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from google.auth.exceptions import GoogleAuthError
+from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from oauthlib.oauth2 import OAuth2Error
+from requests.exceptions import RequestException
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .gmail_auth import GmailAuthError, load_credentials, new_flow, save_credentials, token_path
+from .gmail_auth import (
+    GmailAuthError,
+    load_credentials,
+    mailbox_needs_binding,
+    new_flow,
+    save_credentials,
+    save_mailbox,
+    token_path,
+)
 from .gmail_sync import GmailSyncError, sync_gmail
 
 router = APIRouter(prefix="/api/gmail", tags=["gmail"])
 callback_router = APIRouter(tags=["gmail"])
 _pending = {}
+TOKEN_EXCHANGE_TIMEOUT = 10
+
+def mailbox_email(credentials):
+    service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+    email = service.users().getProfile(userId="me").execute().get("emailAddress", "").strip()
+    if not email:
+        raise GmailAuthError("Google did not identify the Gmail mailbox")
+    return email
 
 @router.post("/connect")
 def connect():
@@ -33,11 +52,21 @@ def callback(state: str, code: str = "", error: str = ""):
         raise HTTPException(400, "Gmail authorization was denied")
     try:
         flow = pending[0]
-        flow.fetch_token(code=code)
+        flow.fetch_token(code=code, timeout=TOKEN_EXCHANGE_TIMEOUT)
         if not flow.credentials.refresh_token:
             raise GmailAuthError("Google did not return a refresh token; reconnect Gmail")
+        email = mailbox_email(flow.credentials)
+        needs_binding = mailbox_needs_binding(email)
         save_credentials(flow.credentials)
-    except (GoogleAuthError, ValueError, GmailAuthError) as exc:
+        if needs_binding:
+            save_mailbox(email)
+    except OAuth2Error as exc:
+        raise HTTPException(400, "Gmail authorization code is invalid or expired; start again") from exc
+    except (RequestException, HttpError) as exc:
+        raise HTTPException(502, "Gmail authorization service is unavailable; try again") from exc
+    except GmailAuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (GoogleAuthError, ValueError) as exc:
         raise HTTPException(400, "Gmail authorization failed; reconnect Gmail") from exc
     return {"connected": True}
 
