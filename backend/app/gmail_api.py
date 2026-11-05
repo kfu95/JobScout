@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .gmail_auth import (
     GmailAuthError,
+    GmailTransportError,
+    gmail_transport_call,
     load_credentials,
     mailbox_needs_binding,
     new_flow,
@@ -26,8 +28,13 @@ _pending = {}
 TOKEN_EXCHANGE_TIMEOUT = 10
 
 def mailbox_email(credentials):
-    service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
-    email = service.users().getProfile(userId="me").execute().get("emailAddress", "").strip()
+    service = gmail_transport_call(
+        lambda: build("gmail", "v1", credentials=credentials, cache_discovery=False)
+    )
+    profile = gmail_transport_call(
+        lambda: service.users().getProfile(userId="me").execute()
+    )
+    email = profile.get("emailAddress", "").strip()
     if not email:
         raise GmailAuthError("Google did not identify the Gmail mailbox")
     return email
@@ -62,7 +69,7 @@ def callback(state: str, code: str = "", error: str = ""):
             save_mailbox(email)
     except OAuth2Error as exc:
         raise HTTPException(400, "Gmail authorization code is invalid or expired; start again") from exc
-    except (RequestException, HttpError) as exc:
+    except (RequestException, GmailTransportError, HttpError) as exc:
         raise HTTPException(502, "Gmail authorization service is unavailable; try again") from exc
     except GmailAuthError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -79,6 +86,8 @@ def status():
         return {"connected": True}
     except GmailAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
+    except GoogleAuthError as exc:
+        raise HTTPException(502, "Gmail credential refresh failed; try again") from exc
 
 @router.post("/sync")
 def sync(db: Session = Depends(get_db)):
@@ -88,5 +97,5 @@ def sync(db: Session = Depends(get_db)):
         raise HTTPException(401, str(exc)) from exc
     except GmailSyncError as exc:
         raise HTTPException(400, str(exc)) from exc
-    except (HttpError, GoogleAuthError) as exc:
+    except (GmailTransportError, HttpError, GoogleAuthError) as exc:
         raise HTTPException(502, "Gmail sync failed; check credentials and provider availability") from exc

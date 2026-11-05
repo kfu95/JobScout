@@ -3,7 +3,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from google.auth.exceptions import RefreshError
+import httplib2
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -13,6 +14,15 @@ REDIRECT_URI = "http://127.0.0.1:8000/"
 
 class GmailAuthError(Exception):
     pass
+
+class GmailTransportError(Exception):
+    pass
+
+def gmail_transport_call(call):
+    try:
+        return call()
+    except (httplib2.HttpLib2Error, OSError, TransportError) as exc:
+        raise GmailTransportError("Gmail provider transport failed") from exc
 
 def directory():
     return Path(os.getenv("GMAIL_CREDENTIAL_DIR", "./config/gmail"))

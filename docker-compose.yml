@@ -24,7 +24,6 @@ services:
       GMAIL_CREDENTIAL_DIR: /gmail
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_LABELS: ${GMAIL_LABELS:-}
-      GMAIL_RECONCILE_SECONDS: ${GMAIL_RECONCILE_SECONDS:-86400}
       PROFILE_PATH: /config/profile.json
       CORS_ORIGINS: http://localhost:3000
     volumes:
@@ -48,7 +47,6 @@ services:
       GMAIL_CREDENTIAL_DIR: /gmail
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_LABELS: ${GMAIL_LABELS:-}
-      GMAIL_RECONCILE_SECONDS: ${GMAIL_RECONCILE_SECONDS:-86400}
       PROFILE_PATH: /config/profile.json
       POLL_SECONDS: ${POLL_SECONDS:-7200}
     volumes:

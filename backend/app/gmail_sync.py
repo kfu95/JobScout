@@ -3,7 +3,6 @@ import hashlib
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone
 
 from googleapiclient.discovery import build
@@ -13,6 +12,7 @@ from sqlalchemy import select
 from .gmail_auth import (
     GmailAuthError,
     directory,
+    gmail_transport_call,
     load_credentials,
     mailbox_needs_binding,
     save_mailbox,
@@ -21,6 +21,9 @@ from .models import GmailMessage, GmailSyncState
 
 SPAM_TRASH_QUERY = re.compile(
     r"(?:^|[\s({])(?:in|label):(spam|trash|anywhere)(?=$|[\s)}])", re.IGNORECASE
+)
+TIME_RELATIVE_QUERY = re.compile(
+    r"(?<!\w)(?:after|before|older|newer|older_than|newer_than):", re.IGNORECASE
 )
 
 class GmailSyncError(Exception):
@@ -31,44 +34,25 @@ def filters():
     labels = [label.strip() for label in os.getenv("GMAIL_LABELS", "").split(",") if label.strip()]
     if not query and not labels:
         raise GmailSyncError("Set GMAIL_QUERY or GMAIL_LABELS before syncing")
+    if any(label.upper() in {"SPAM", "TRASH"} for label in labels) or SPAM_TRASH_QUERY.search(query):
+        raise GmailSyncError("Gmail filters cannot target Spam or Trash")
+    if TIME_RELATIVE_QUERY.search(query):
+        raise GmailSyncError("Time-relative Gmail query operators are not supported")
     return query, labels
-
-def reconciliation_interval():
-    try:
-        seconds = int(os.getenv("GMAIL_RECONCILE_SECONDS", "86400"))
-    except ValueError as exc:
-        raise GmailSyncError("GMAIL_RECONCILE_SECONDS must be a positive integer") from exc
-    if seconds < 1:
-        raise GmailSyncError("GMAIL_RECONCILE_SECONDS must be a positive integer")
-    return seconds
 
 def pages(method, key, **kwargs):
     token = None
     while True:
-        page = method(pageToken=token, **kwargs).execute()
+        request = gmail_transport_call(lambda: method(pageToken=token, **kwargs))
+        page = gmail_transport_call(request.execute)
         yield from page.get(key, [])
         token = page.get("nextPageToken")
         if not token:
             break
 
-def spam_trash_requested(query, labels):
-    return any(label.upper() in {"SPAM", "TRASH"} for label in labels) or bool(
-        SPAM_TRASH_QUERY.search(query)
-    )
-
-def reconciliation_due(seconds):
-    try:
-        last_full_sync = (directory() / ".last-full-sync").stat().st_mtime
-    except FileNotFoundError:
-        return True
-    return time.time() - last_full_sync >= seconds
-
-def mark_reconciled():
-    (directory() / ".last-full-sync").touch(mode=0o600)
-
-def matches_filters(messages, message_id, message, query, labels, include_spam_trash):
+def matches_filters(messages, message_id, message, query, labels):
     message_labels = set(message.get("labelIds", []))
-    if not include_spam_trash and message_labels.intersection({"SPAM", "TRASH"}):
+    if message_labels.intersection({"SPAM", "TRASH"}):
         return False
     if not set(labels).issubset(message_labels):
         return False
@@ -77,27 +61,30 @@ def matches_filters(messages, message_id, message, query, labels, include_spam_t
     received_at = int(message["internalDate"]) // 1000
     scoped_query = f"({query}) after:{received_at - 1} before:{received_at + 1}"
     matching = pages(messages.list, "messages", userId="me", q=scoped_query,
-                     labelIds=labels or None, includeSpamTrash=include_spam_trash)
+                     labelIds=labels or None, includeSpamTrash=False)
     return any(item["id"] == message_id for item in matching)
 
 def sync_gmail(db):
     query, labels = filters()
-    reconcile_seconds = reconciliation_interval()
     directory().mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = directory() / ".sync.lock"
     with lock_path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return _sync(db, query, labels, reconcile_seconds)
+        return _sync(db, query, labels)
 
-def _sync(db, query, labels, reconcile_seconds):
-    service = build("gmail", "v1", credentials=load_credentials(), cache_discovery=False)
+def _sync(db, query, labels):
+    credentials = load_credentials()
+    service = gmail_transport_call(
+        lambda: build("gmail", "v1", credentials=credentials, cache_discovery=False)
+    )
     users = service.users()
     messages = users.messages()
     filter_hash = hashlib.sha256(json.dumps([query, sorted(labels)]).encode()).hexdigest()
-    include_spam_trash = spam_trash_requested(query, labels)
     try:
         # Capture the watermark before listing, so changes during listing are replayed.
-        profile = users.getProfile(userId="me").execute()
+        profile = gmail_transport_call(
+            lambda: users.getProfile(userId="me").execute()
+        )
         email = profile.get("emailAddress", "").strip()
         if not email:
             raise GmailAuthError("Google did not identify the Gmail mailbox")
@@ -106,14 +93,15 @@ def _sync(db, query, labels, reconcile_seconds):
         watermark = profile["historyId"]
         state = db.get(GmailSyncState, 1)
         candidates = None
-        if state and state.filter_hash == filter_hash and not reconciliation_due(reconcile_seconds):
+        if state:
             try:
                 history = pages(users.history().list, "history", userId="me",
                                 startHistoryId=state.history_id)
                 candidates = set()
                 for record in history:
-                    for kind in ("messagesAdded", "labelsAdded", "labelsRemoved"):
-                        candidates.update(item["message"]["id"] for item in record.get(kind, []))
+                    candidates.update(
+                        item["message"]["id"] for item in record.get("messagesAdded", [])
+                    )
             except HttpError as exc:
                 if exc.resp.status != 404:
                     raise
@@ -121,22 +109,25 @@ def _sync(db, query, labels, reconcile_seconds):
         incremental = candidates is not None
         if not incremental:
             matching = pages(messages.list, "messages", userId="me", q=query or None,
-                             labelIds=labels or None, includeSpamTrash=include_spam_trash)
+                             labelIds=labels or None, includeSpamTrash=False)
             candidates = {item["id"] for item in matching}
         count = 0
         for message_id in candidates:
             if db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == message_id)):
                 continue
             try:
-                message = messages.get(userId="me", id=message_id, format="metadata",
-                                       metadataHeaders=["Message-ID", "Subject"]).execute()
+                request = gmail_transport_call(
+                    lambda: messages.get(
+                        userId="me", id=message_id, format="metadata",
+                        metadataHeaders=["Message-ID", "Subject"],
+                    )
+                )
+                message = gmail_transport_call(request.execute)
             except HttpError as exc:
                 if exc.resp.status == 404:
                     continue
                 raise
-            if incremental and not matches_filters(
-                messages, message_id, message, query, labels, include_spam_trash
-            ):
+            if incremental and not matches_filters(messages, message_id, message, query, labels):
                 continue
             headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
             db.add(GmailMessage(provider_message_id=message_id, thread_id=message["threadId"],
@@ -150,8 +141,6 @@ def _sync(db, query, labels, reconcile_seconds):
         else:
             state.history_id, state.filter_hash = watermark, filter_hash
         db.commit()
-        if not incremental:
-            mark_reconciled()
         return {"added": count, "mode": "incremental" if incremental else "full"}
     except Exception:
         db.rollback()
