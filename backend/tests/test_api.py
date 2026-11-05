@@ -116,6 +116,23 @@ def test_equal_fact_retry_reconciles_approved_packet(api_engine):
         assert detail["packet"] is None
 
 
+def test_post_submission_lifecycle_survives_fact_changes(api_engine):
+    old_fact = {"id": "fact-1", "role": "Engineer", "company": "Example Co", "dates": "2020 - 2024", "bullets": ["Built services"], "skills": ["Python"], "verified": True}
+    save_facts([{**old_fact, "bullets": ["Built reliable services"]}])
+    job_id = add_job(api_engine)
+    with Session(api_engine) as db:
+        db.add(Application(job_id=job_id, status="submission_reported", packet={"selected_facts": [old_fact]}, reported_at=now()))
+        db.commit()
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/jobs/{job_id}").json()
+        assert detail["application_status"] == "submission_reported"
+        assert detail["packet"] is None
+        response = client.post(f"/api/jobs/{job_id}/status", json={"status": "confirmed", "evidence": "receipt email"})
+        assert response.status_code == 200
+        assert response.json()["status"] == "confirmed"
+
+
 def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("ENABLE_AI_SCORING", "true")
