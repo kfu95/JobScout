@@ -14,7 +14,7 @@ bash setup.sh
 
 Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
 
-`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates the user-restricted Gmail credential directory before starting Compose. The generated files are excluded from Git. Upload a resume and verify its extracted facts in the dashboard before preparing application packets. Run `docker compose up -d --force-recreate api worker` after changing environment variables; profile identity and skills are read on each scoring/preparation request.
+`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates user-restricted Gmail credential and onboarding data directories before starting Compose. The generated files are excluded from Git. Upload a resume and verify its extracted facts in the dashboard before preparing application packets. Run `docker compose up -d --force-recreate api worker` after changing environment variables; profile skills are read during scoring, and profile identity is read during packet preparation.
 
 ## Discover jobs
 
@@ -78,7 +78,7 @@ To generate AI-assisted packet drafts and optionally AI job-fit scoring:
 3. To turn on AI scoring for subsequently added/changed jobs, set `ENABLE_AI_SCORING=true` and run `docker compose up -d --force-recreate api worker`.
 4. `OPENAI_MODEL` defaults to `gpt-4o-mini` and can be changed to an available compatible model.
 
-Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile unless you have reviewed data handling requirements.
+Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile or onboarding facts unless you have reviewed data handling requirements.
 
 ## Review-before-submit workflow
 
@@ -93,14 +93,14 @@ Cost and access depend on your API account/model. The code uses structured outpu
 
 ## Included / not included
 
-**Included:** Automatic public Greenhouse / Lever / Ashby board discovery and collection; Remotive and optional USAJOBS aggregation; bounded Lever pagination; title/location/description normalization; exact normalized-URL deduplication; job-description versioning; two-successful-snapshot closure for ATS-board jobs; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; optional Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
+**Included:** PDF/DOCX resume import with verified-fact review; job preferences and immediate rescoring; automatic public Greenhouse / Lever / Ashby board discovery and collection; Remotive and optional USAJOBS aggregation; bounded Lever pagination; title/location/description normalization; exact normalized-URL deduplication; job-description versioning; two-successful-snapshot closure for ATS-board jobs; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; optional Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
 
 **Not yet integrated:** Semantic matching across different listing URLs; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
 
 ## Security and operations
 
 - Both HTTP ports are bound to `127.0.0.1` in `docker-compose.yml`. The API has **no authentication** and must not be publicly deployed as written.
-- Keep `.env` and `config/profile.json` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
+- Keep `.env`, `config/profile.json`, and `config/onboarding/` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
 - Postgres persists in the `pgdata` Docker volume. `docker compose down` keeps the volume; `docker compose down -v` destroys it.
 - Read-only ATS polling uses exact allowlisted HTTPS hosts and validated board slugs. No arbitrary URL fetch or application POST is performed.
 - Jobs with matching normalized listing URLs are deduplicated across sources. Different URLs for the same job may still appear separately.
@@ -159,4 +159,4 @@ Deferred: concurrent collection coordination across API and worker, more complet
 
 Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported only when the onboarding fact store is first created. The source document is discarded after extraction. Facts and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
 
-Preferences affect stored job scores immediately. Company and keyword exclusions and a stated salary below the annual USD floor remove matches. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus Ashby's structured annual USD salary components; it does not treat foreign currencies, stipends, bonuses, equity, nonannual rates, or unlabeled amounts as annual salary. Review compensation in the original listing.
+Preferences affect stored job scores immediately. Target-title phrases act as hard filters. Selected seniority terms raise rankings when matched in a title; location and work-mode terms raise rankings when matched in the listing location. Company identity exclusions, keyword phrase exclusions, and a stated salary below the annual USD floor remove matches. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus Ashby's structured annual USD salary components; it does not treat foreign currencies, stipends, bonuses, equity, nonannual rates, or unlabeled amounts as annual salary. Review compensation in the original listing.

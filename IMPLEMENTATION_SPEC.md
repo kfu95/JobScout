@@ -6,7 +6,7 @@ You are developing this repository as a personal job discovery and review-before
 
 - Never submit a job application automatically. A human must visit and submit the employer's form.
 - Do not scrape LinkedIn or access protected pages using browser automation in violation of their rules. Use public APIs, user-provided links, and authorized access.
-- Resume claims must originate from the verified-experience profile. A model may pick and reorder verified bullet points but may not invent qualifications or metrics.
+- Resume claims must originate from verified onboarding facts. A model may pick and reorder verified bullet points but may not invent qualifications or metrics.
 - An `approved` packet and a `submission_reported` application are not proof of submission. Store evidence before moving to `confirmed`.
 - API currently has no auth and listens on loopback. Add auth, CSRF protections, HTTPS, rate limits, and secure credentials before any public deployment.
 - Preserve audit events and idempotent reprocessing. Avoid duplicate model calls for unchanged job descriptions.
@@ -30,9 +30,9 @@ You are developing this repository as a personal job discovery and review-before
 
 ## Milestone 3: Better matching and packets
 
-1. Split hard filters from semantic ranking. Expand the current location and compensation filters with role family, seniority, work arrangement, exclusion lists, and explicit uncertainty treatment.
+1. Refine the current hard-filter and semantic-ranking split with richer role-family handling and explicit uncertainty treatment.
 2. Cache score by `(job_hash, profile_hash, prompt_version, model_version)`. Evaluate accuracy against a labeled set of 100 example jobs.
-3. Introduce structured candidate career facts with date ranges, technologies, evidence links, and verified/unverified flags. Block unverified facts from generated resumes.
+3. Add evidence links to the existing structured candidate career facts.
 4. Create a PDF resume layout with validated section ordering, page breaks, and a preview/diff against the base resume. Support manual edits with an approval timestamp.
 5. Use LLM structured outputs for selecting fact IDs and drafting optional application questions, never to fabricate work history.
 
