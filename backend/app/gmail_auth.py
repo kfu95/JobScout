@@ -21,6 +21,13 @@ class GmailTransportError(Exception):
 def gmail_transport_call(call):
     try:
         return call()
+    except RefreshError as exc:
+        response = next((arg for arg in exc.args if isinstance(arg, dict)), {})
+        if response.get("error") == "invalid_grant":
+            raise GmailAuthError(
+                "Gmail credentials are invalid or revoked; reconnect Gmail"
+            ) from exc
+        raise GmailTransportError("Gmail credential refresh failed; try again") from exc
     except (httplib2.HttpLib2Error, OSError, TransportError) as exc:
         raise GmailTransportError("Gmail provider transport failed") from exc
 
@@ -83,12 +90,12 @@ def load_credentials():
         if not credentials.valid:
             if not credentials.refresh_token:
                 raise GmailAuthError("Gmail credentials expired; reconnect Gmail")
-            credentials.refresh(Request())
+            gmail_transport_call(lambda: credentials.refresh(Request()))
             save_credentials(credentials)
         if not credentials.has_scopes(SCOPES):
             raise GmailAuthError("Gmail read-only permission missing; reconnect Gmail")
         return credentials
     except FileNotFoundError as exc:
         raise GmailAuthError("Gmail is not connected") from exc
-    except (ValueError, json.JSONDecodeError, RefreshError) as exc:
+    except (ValueError, json.JSONDecodeError) as exc:
         raise GmailAuthError("Gmail credentials are invalid or revoked; reconnect Gmail") from exc

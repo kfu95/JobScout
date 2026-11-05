@@ -91,7 +91,7 @@ def status():
         return {"connected": True}
     except GmailAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
-    except GoogleAuthError as exc:
+    except (GmailTransportError, GoogleAuthError) as exc:
         raise HTTPException(502, "Gmail credential refresh failed; try again") from exc
 
 @router.post("/sync")
@@ -103,4 +103,6 @@ def sync(db: Session = Depends(get_db)):
     except GmailSyncError as exc:
         raise HTTPException(400, str(exc)) from exc
     except (GmailTransportError, HttpError, GoogleAuthError) as exc:
-        raise HTTPException(502, "Gmail sync failed; check credentials and provider availability") from exc
+        raise HTTPException(
+            502, "Gmail sync failed; check credentials and provider availability, then try again"
+        ) from exc

@@ -49,6 +49,7 @@ class Gmail:
         self.message_labels = {}
         self.full_query = "jobs"
         self.expected_labels = ["job-alerts"]
+        self.profile_result = {"emailAddress": "user@example.com", "historyId": "100"}
 
     def users(self):
         return self
@@ -60,7 +61,7 @@ class Gmail:
         return self
 
     def getProfile(self, **kwargs):
-        return Request({"emailAddress": "user@example.com", "historyId": "100"})
+        return Request(self.profile_result)
 
     def history_message(self, message_id):
         message = {"id": message_id}
@@ -250,7 +251,7 @@ def test_revoked_credentials_are_explicit(monkeypatch, tmp_path):
         valid = False
         refresh_token = "revoked"
         def refresh(self, request):
-            raise RefreshError("revoked")
+            raise RefreshError("invalid_grant: revoked", {"error": "invalid_grant"})
     monkeypatch.setattr("app.gmail_auth.Credentials.from_authorized_user_file", lambda *args: Credentials())
     with pytest.raises(GmailAuthError, match="revoked"):
         load_credentials()
@@ -418,17 +419,65 @@ def test_oauth_profile_transport_failure_returns_502(monkeypatch):
     assert response.status_code == 502
     assert saved == []
 
-def test_status_refresh_transport_failure_returns_502(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "failure",
+    [TransportError("network unavailable"), GmailTransportError("refresh unavailable")],
+)
+def test_status_refresh_transport_failure_returns_502(monkeypatch, tmp_path, failure):
     monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))
     (tmp_path / "token.json").write_text("{}")
     monkeypatch.setattr(
         "app.gmail_api.load_credentials",
-        lambda: (_ for _ in ()).throw(TransportError("network unavailable")),
+        lambda: (_ for _ in ()).throw(failure),
     )
     monkeypatch.setattr("app.main.init_db", lambda: None)
     with TestClient(app) as client:
         response = client.get("/api/gmail/status")
     assert response.status_code == 502
+
+def test_sync_invalid_grant_refresh_requires_reconnect(setup, monkeypatch, tmp_path):
+    gmail, db = setup
+    token = tmp_path / "token.json"
+    token.write_text("stored credentials")
+    db.add(GmailSyncState(id=1, history_id="saved-cursor"))
+    db.commit()
+    gmail.profile_result = RefreshError(
+        "invalid_grant: revoked", {"error": "invalid_grant"}
+    )
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/gmail/sync")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+    assert response.status_code == 401
+    assert "reconnect Gmail" in response.json()["detail"]
+    assert token.read_text() == "stored credentials"
+    assert db.get(GmailSyncState, 1).history_id == "saved-cursor"
+    assert db.scalar(select(func.count(GmailMessage.id))) == 0
+
+def test_sync_transient_refresh_failure_is_retryable(setup, monkeypatch, tmp_path):
+    gmail, db = setup
+    token = tmp_path / "token.json"
+    token.write_text("stored credentials")
+    db.add(GmailSyncState(id=1, history_id="saved-cursor"))
+    db.commit()
+    gmail.profile_result = RefreshError(
+        "temporarily_unavailable", {"error": "temporarily_unavailable"}, retryable=True
+    )
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/gmail/sync")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+    assert response.status_code == 502
+    assert "try again" in response.json()["detail"]
+    assert token.read_text() == "stored credentials"
+    assert db.get(GmailSyncState, 1).history_id == "saved-cursor"
+    assert db.scalar(select(func.count(GmailMessage.id))) == 0
 
 def test_sync_transport_failure_returns_502(monkeypatch):
     monkeypatch.setattr(
