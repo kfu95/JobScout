@@ -16,6 +16,8 @@ def remotive_salary_max(text):
     text = str(text or "")
     if re.search(r"(?i)\b(?:hourly?|hrs?|daily|days?|weekly|weeks?|monthly|months?)\b|/(?:hr|day|week|month)\b", text):
         return None
+    if "$" not in text and not re.search(r"(?i)\bUSD\b", text):
+        return None
     values = re.findall(r"(?i)(?<![\w.])(?:USD\s*)?\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k?)", text)
     amounts = [float(n.replace(",", "")) * (1000 if suffix else 1) for n, suffix in values]
     amounts = [amount for amount in amounts if amount >= 1000]

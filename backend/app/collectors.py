@@ -14,6 +14,7 @@ from .scoring import score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
 SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,150}$")
+LOCATION_MAX_LENGTH = 500
 
 
 def plain(value):
@@ -40,6 +41,13 @@ def normalized_location(locations, workplace_type=""):
 def positive_max(values):
     amounts = [float(value) for value in values if value is not None and float(value) > 0]
     return max(amounts) if amounts else None
+
+
+def persisted_location(value):
+    value = str(value or "")
+    if len(value) <= LOCATION_MAX_LENGTH:
+        return value
+    return value[:LOCATION_MAX_LENGTH - 3] + "..."
 
 
 def normalize(provider, item):
@@ -147,6 +155,7 @@ def persist_snapshot(
     stats = {"new": 0, "updated": 0, "closed": 0, "seen": len(unique_postings)}
     for external_id, p in unique_postings.items():
         digest = content_hash(p)
+        location = persisted_location(p.get("location"))
         job = old_jobs.pop(external_id, None)
         url = canonical_url(p["apply_url"])
         duplicate_id = existing_urls.get(url)
@@ -168,7 +177,7 @@ def persist_snapshot(
             continue
         if job is None:
             score, reason, method = score_posting(p)
-            job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=p["location"],
+            job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=location,
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
                       score=score, score_reason=reason, score_method=method)
             db.add(job)
@@ -182,7 +191,7 @@ def persist_snapshot(
             job.missing_count = 0
             if job.hash != digest:
                 old_url = canonical_url(job.apply_url)
-                job.title, job.location, job.description = p["title"], p["location"], p["description"]
+                job.title, job.location, job.description = p["title"], location, p["description"]
                 job.apply_url, job.hash = p["apply_url"], digest
                 job.score, job.score_reason, job.score_method = score_posting(p)
                 if existing_urls.get(old_url) == job.id:

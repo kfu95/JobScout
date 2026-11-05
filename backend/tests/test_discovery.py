@@ -3,11 +3,11 @@ import httpx
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, store_aggregator
+from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, remotive_posting, store_aggregator, usajobs_posting
 from app.collectors import collect_all, normalize, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
-from app.models import Board, Job
+from app.models import Board, Job, JobVersion
 from app.preferences import matches
 
 PREFS = {"titles": ["senior software engineer"], "locations": ["new york", "remote"], "salary_floor": 150000}
@@ -39,6 +39,17 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
     assert matches({**usa[0], "title": "Staff Software Engineer", "salary_max": 180000}, PREFS)
+    foreign_salary = remotive_posting({
+        "id": 5, "company_name": "B", "title": "Senior Software Engineer", "candidate_required_location": "USA",
+        "url": "https://remotive.com/job/5", "salary": "€140k - €160k",
+    })
+    assert foreign_salary["salary_max"] is None
+    assert matches(foreign_salary, {**PREFS, "salary_floor": 170000})
+    dollar_salary = remotive_posting({
+        "id": 6, "company_name": "C", "title": "Senior Software Engineer", "candidate_required_location": "USA",
+        "url": "https://remotive.com/job/6", "salary": "$40,000 - $50,000",
+    })
+    assert dollar_salary["salary_max"] == 50000
 
 
 def test_ats_provider_contract_normalization():
@@ -92,6 +103,47 @@ def test_ats_provider_contract_normalization():
         "id": "lever-3", "text": "Engineer", "applyUrl": "https://example.com/lever-3",
         "categories": {}, "salaryRange": {"currency": "EUR", "interval": "per-year-salary", "max": 180000},
     })["salary_max"] is None
+
+
+def test_full_locations_match_before_bounded_persistence():
+    location_names = [f"Region {index} {'x' * 20}" for index in range(30)] + ["New York"]
+    postings = [
+        normalize("lever", {
+            "id": "lever-long", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-long",
+            "categories": {"allLocations": location_names}, "workplaceType": "hybrid",
+        }),
+        normalize("ashby", {
+            "jobUrl": "https://example.com/ashby-long", "title": "Staff Software Engineer",
+            "location": location_names[0],
+            "secondaryLocations": [{"location": location} for location in location_names[1:]],
+            "workplaceType": "OnSite", "descriptionPlain": "",
+        }),
+        usajobs_posting({
+            "MatchedObjectId": "usa-long",
+            "MatchedObjectDescriptor": {
+                "PositionTitle": "Staff Software Engineer", "OrganizationName": "Agency",
+                "PositionURI": "https://usajobs.gov/job/long",
+                "PositionLocation": [{"LocationName": location} for location in location_names],
+            },
+        }),
+    ]
+    assert all(len(posting["location"]) > 500 and matches(posting, PREFS) for posting in postings)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        for index, posting in enumerate(postings):
+            board = Board(company=f"Company {index}", provider=f"provider-{index}", slug=f"provider-{index}")
+            db.add(board)
+            db.commit()
+            persist_snapshot(db, board, [posting])
+            persist_snapshot(db, board, [{**posting, "location": posting["location"] + ", Updated Place"}])
+            job = db.scalar(select(Job).where(Job.board_id == board.id))
+            versions = db.scalars(select(JobVersion).where(JobVersion.job_id == job.id)).all()
+            assert len(job.location) == 500 and job.location.endswith("...")
+            assert "Preferred location" in job.score_reason
+            assert len(versions) == 2
+            assert all(version.location == job.location for version in versions)
 
 
 def test_directory_and_cross_source_dedup(monkeypatch):
