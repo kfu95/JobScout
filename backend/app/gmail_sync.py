@@ -98,14 +98,9 @@ def _sync(db, query, labels):
                                 startHistoryId=state.history_id)
                 candidates = set()
                 for record in history:
-                    for item in record.get("messagesAdded", []):
-                        message = item["message"]
-                        message_labels = message.get("labelIds")
-                        if (
-                            message_labels is not None
-                            and not set(message_labels).intersection({"SPAM", "TRASH"})
-                        ):
-                            candidates.add(message["id"])
+                    candidates.update(
+                        item["message"]["id"] for item in record.get("messagesAdded", [])
+                    )
             except HttpError as exc:
                 if exc.resp.status != 404:
                     raise
@@ -118,6 +113,14 @@ def _sync(db, query, labels):
         count = 0
         for message_id in candidates:
             if db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == message_id)):
+                continue
+            preflight_request = gmail_transport_call(
+                lambda: messages.get(
+                    userId="me", id=message_id, format="minimal", fields="id,labelIds"
+                )
+            )
+            preflight = gmail_transport_call(preflight_request.execute)
+            if set(preflight.get("labelIds", [])).intersection({"SPAM", "TRASH"}):
                 continue
             try:
                 request = gmail_transport_call(

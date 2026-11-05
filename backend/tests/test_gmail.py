@@ -1,7 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+import asyncio
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
-from app import gmail_api
+from app import gmail_api, worker
 from app.gmail_auth import GmailAuthError, GmailTransportError, load_credentials
 from app.gmail_sync import GmailSyncError, sync_gmail
 from app.main import app
@@ -43,7 +44,8 @@ class Gmail:
         self.history_start = []
         self.full_list_calls = 0
         self.get_ids = []
-        self.history_without_labels = set()
+        self.preflight_ids = []
+        self.preflight_errors = {}
         self.last_get_id = None
         self.query_matches = {"a", "b"}
         self.message_labels = {}
@@ -64,10 +66,7 @@ class Gmail:
         return Request(self.profile_result)
 
     def history_message(self, message_id):
-        message = {"id": message_id}
-        if message_id not in self.history_without_labels:
-            message["labelIds"] = self.message_labels.get(message_id, ["job-alerts"])
-        return {"message": message}
+        return {"message": {"id": message_id, "threadId": "thread"}}
 
     def list(self, **kwargs):
         if "startHistoryId" in kwargs:
@@ -80,7 +79,10 @@ class Gmail:
                 }], "nextPageToken": "next"})
             return Request({"history": [{
                 "messagesAdded": [self.history_message(i) for i in self.history_ids[1:]],
-                "labelsAdded": [{"message": {"id": i}} for i in self.label_history_ids],
+                "labelsAdded": [{
+                    "message": {"id": i, "threadId": "thread"},
+                    "labelIds": self.message_labels.get(i, ["job-alerts"]),
+                } for i in self.label_history_ids],
             }]})
         if kwargs["q"] != self.full_query:
             assert kwargs["q"] == f"({self.full_query}) after:1699999999 before:1700000001"
@@ -96,7 +98,18 @@ class Gmail:
         return Request({"messages": [{"id": i} for i in self.ids[1:]]})
 
     def get(self, **kwargs):
+        if kwargs["format"] == "minimal":
+            assert kwargs["fields"] == "id,labelIds"
+            assert "metadataHeaders" not in kwargs
+            self.preflight_ids.append(kwargs["id"])
+            if kwargs["id"] in self.preflight_errors:
+                return Request(self.preflight_errors[kwargs["id"]])
+            return Request({
+                "id": kwargs["id"],
+                "labelIds": self.message_labels.get(kwargs["id"], ["job-alerts"]),
+            })
         assert kwargs["format"] == "metadata"
+        assert "fields" not in kwargs
         self.last_get_id = kwargs["id"]
         self.get_ids.append(kwargs["id"])
         return Request({"threadId": "thread", "internalDate": "1700000000000", "snippet": "s" * 600,
@@ -124,22 +137,28 @@ def test_full_incremental_expiry_and_idempotence(setup):
     assert len(db.scalar(select(GmailMessage).where(GmailMessage.provider_message_id == "a")).snippet) == 500
     assert gmail.full_list_calls == 2
     gmail.history_ids = [
-        "spam", "trash", "missing-labels", "c", "d", "wrong-query", "wrong-label",
+        "spam", "trash", "history-contract", "c", "d", "wrong-query", "wrong-label",
     ]
     gmail.label_history_ids = ["label-only"]
-    gmail.query_matches.update({"c", "d", "wrong-label"})
+    gmail.query_matches.update({"history-contract", "c", "d", "wrong-label"})
     gmail.message_labels["spam"] = ["SPAM"]
     gmail.message_labels["trash"] = ["TRASH"]
-    gmail.history_without_labels.add("missing-labels")
     gmail.message_labels["wrong-label"] = ["other"]
-    assert sync_gmail(db) == {"added": 2, "mode": "incremental"}
+    assert sync_gmail(db) == {"added": 3, "mode": "incremental"}
     assert gmail.full_list_calls == 2
+    assert set(gmail.history_ids).issubset(gmail.preflight_ids)
     assert "spam" not in gmail.get_ids
     assert "trash" not in gmail.get_ids
-    assert "missing-labels" not in gmail.get_ids
+    assert "history-contract" in gmail.get_ids
+    assert db.scalar(
+        select(GmailMessage.id).where(
+            GmailMessage.provider_message_id == "history-contract"
+        )
+    ) is not None
     assert db.scalar(
         select(GmailMessage.id).where(GmailMessage.provider_message_id == "label-only")
     ) is None
+    assert "label-only" not in gmail.preflight_ids
     assert gmail.history_start == ["100", "100"]
     assert sync_gmail(db) == {"added": 0, "mode": "incremental"}
     assert gmail.full_list_calls == 2
@@ -147,7 +166,7 @@ def test_full_incremental_expiry_and_idempotence(setup):
     gmail.ids += ["e"]
     gmail.query_matches.add("e")
     assert sync_gmail(db) == {"added": 1, "mode": "full"}
-    assert db.scalar(select(func.count(GmailMessage.id))) == 5
+    assert db.scalar(select(func.count(GmailMessage.id))) == 6
     assert db.get(GmailSyncState, 1).history_id == "100"
 
 def test_sync_rejects_a_different_mailbox_without_mutating_state(setup, tmp_path):
@@ -198,6 +217,24 @@ def test_full_sync_rechecks_current_filters_before_storing(
     assert db.scalar(
         select(GmailMessage.id).where(GmailMessage.provider_message_id == "b")
     ) is not None
+    assert set(gmail.ids).issubset(gmail.preflight_ids)
+    if set(current_labels).intersection({"SPAM", "TRASH"}):
+        assert "a" not in gmail.get_ids
+
+def test_preflight_failure_preserves_history_cursor(setup):
+    gmail, db = setup
+    assert sync_gmail(db) == {"added": 2, "mode": "full"}
+    gmail.profile_result["historyId"] = "200"
+    gmail.history_ids = ["unavailable"]
+    gmail.preflight_errors["unavailable"] = HttpError(
+        SimpleNamespace(status=503, reason="unavailable"), b"{}"
+    )
+    with pytest.raises(HttpError):
+        sync_gmail(db)
+    assert db.get(GmailSyncState, 1).history_id == "100"
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "unavailable")
+    ) is None
 
 @pytest.mark.parametrize("query", ['subject:"after: interview"', "subject:after:interview"])
 def test_operator_like_subject_queries_are_accepted(setup, monkeypatch, query):
@@ -243,6 +280,52 @@ def test_unsupported_gmail_filters_are_rejected_before_provider_access(
 )
 def test_daily_gmail_schedule_tracks_eastern_dst(now, expected_seconds):
     assert seconds_until_gmail_sync(now) == expected_seconds
+
+def test_gmail_loop_offloads_sync_from_event_loop(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    released_while_blocked = []
+
+    class Token:
+        checks = 0
+
+        def exists(self):
+            self.checks += 1
+            return self.checks == 1
+
+    def blocking_sync():
+        started.set()
+        released_while_blocked.append(release.wait(2))
+        completed.set()
+        return {"added": 0, "mode": "incremental"}
+
+    token = Token()
+    monkeypatch.setattr("app.worker.seconds_until_gmail_sync", lambda: 0)
+    monkeypatch.setattr("app.worker.token_path", lambda: token)
+    monkeypatch.setattr("app.worker.run_gmail_sync", blocking_sync)
+
+    async def exercise():
+        task = asyncio.create_task(worker.gmail_loop())
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set()
+        release.set()
+        for _ in range(100):
+            if completed.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert completed.is_set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise())
+    assert released_while_blocked == [True]
 
 def test_revoked_credentials_are_explicit(monkeypatch, tmp_path):
     monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))

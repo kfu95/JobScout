@@ -36,13 +36,17 @@ async def collection_loop(seconds):
             log.exception("Collection cycle failed; will retry")
         await asyncio.sleep(seconds)
 
+def run_gmail_sync():
+    with SessionLocal() as db:
+        return sync_gmail(db)
+
 async def gmail_loop():
     while True:
         await asyncio.sleep(seconds_until_gmail_sync())
         if token_path().exists():
             try:
-                with SessionLocal() as db:
-                    log.info("Gmail sync: %s", sync_gmail(db))
+                result = await asyncio.to_thread(run_gmail_sync)
+                log.info("Gmail sync: %s", result)
             except Exception:
                 log.exception("Gmail sync failed; will retry at the next daily run")
 
