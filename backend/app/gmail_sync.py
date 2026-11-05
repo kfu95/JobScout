@@ -1,6 +1,4 @@
 import fcntl
-import hashlib
-import json
 import os
 import re
 from datetime import datetime, timezone
@@ -15,7 +13,6 @@ from .gmail_auth import (
     gmail_transport_call,
     load_credentials,
     mailbox_needs_binding,
-    save_mailbox,
 )
 from .models import GmailMessage, GmailSyncState
 
@@ -23,8 +20,10 @@ SPAM_TRASH_QUERY = re.compile(
     r"(?:^|[\s({])(?:in|label):(spam|trash|anywhere)(?=$|[\s)}])", re.IGNORECASE
 )
 TIME_RELATIVE_QUERY = re.compile(
-    r"(?<!\w)(?:after|before|older|newer|older_than|newer_than):", re.IGNORECASE
+    r"(?:^|[\s({])[-+]?(?:after|before|older|newer|older_than|newer_than):",
+    re.IGNORECASE,
 )
+QUOTED_QUERY = re.compile(r'"(?:\\.|[^"\\])*"')
 
 class GmailSyncError(Exception):
     pass
@@ -32,11 +31,12 @@ class GmailSyncError(Exception):
 def filters():
     query = os.getenv("GMAIL_QUERY", "").strip()
     labels = [label.strip() for label in os.getenv("GMAIL_LABELS", "").split(",") if label.strip()]
+    operators = QUOTED_QUERY.sub("", query)
     if not query and not labels:
         raise GmailSyncError("Set GMAIL_QUERY or GMAIL_LABELS before syncing")
-    if any(label.upper() in {"SPAM", "TRASH"} for label in labels) or SPAM_TRASH_QUERY.search(query):
+    if any(label.upper() in {"SPAM", "TRASH"} for label in labels) or SPAM_TRASH_QUERY.search(operators):
         raise GmailSyncError("Gmail filters cannot target Spam or Trash")
-    if TIME_RELATIVE_QUERY.search(query):
+    if TIME_RELATIVE_QUERY.search(operators):
         raise GmailSyncError("Time-relative Gmail query operators are not supported")
     return query, labels
 
@@ -79,7 +79,6 @@ def _sync(db, query, labels):
     )
     users = service.users()
     messages = users.messages()
-    filter_hash = hashlib.sha256(json.dumps([query, sorted(labels)]).encode()).hexdigest()
     try:
         # Capture the watermark before listing, so changes during listing are replayed.
         profile = gmail_transport_call(
@@ -89,7 +88,7 @@ def _sync(db, query, labels):
         if not email:
             raise GmailAuthError("Google did not identify the Gmail mailbox")
         if mailbox_needs_binding(email):
-            save_mailbox(email)
+            raise GmailAuthError("Gmail mailbox identity is missing; reconnect Gmail")
         watermark = profile["historyId"]
         state = db.get(GmailSyncState, 1)
         candidates = None
@@ -99,9 +98,10 @@ def _sync(db, query, labels):
                                 startHistoryId=state.history_id)
                 candidates = set()
                 for record in history:
-                    candidates.update(
-                        item["message"]["id"] for item in record.get("messagesAdded", [])
-                    )
+                    for item in record.get("messagesAdded", []):
+                        message = item["message"]
+                        if not set(message.get("labelIds", [])).intersection({"SPAM", "TRASH"}):
+                            candidates.add(message["id"])
             except HttpError as exc:
                 if exc.resp.status != 404:
                     raise
@@ -136,10 +136,10 @@ def _sync(db, query, labels):
                                 snippet=message.get("snippet", "")[:500]))
             count += 1
         if state is None:
-            state = GmailSyncState(id=1, history_id=watermark, filter_hash=filter_hash)
+            state = GmailSyncState(id=1, history_id=watermark)
             db.add(state)
         else:
-            state.history_id, state.filter_hash = watermark, filter_hash
+            state.history_id = watermark
         db.commit()
         return {"added": count, "mode": "incremental" if incremental else "full"}
     except Exception:

@@ -1,4 +1,5 @@
 import time
+from threading import Lock
 
 from fastapi import APIRouter, Depends, HTTPException
 from google.auth.exceptions import GoogleAuthError
@@ -25,6 +26,7 @@ from .gmail_sync import GmailSyncError, sync_gmail
 router = APIRouter(prefix="/api/gmail", tags=["gmail"])
 callback_router = APIRouter(tags=["gmail"])
 _pending = {}
+_oauth_lock = Lock()
 TOKEN_EXCHANGE_TIMEOUT = 10
 
 def mailbox_email(credentials):
@@ -44,15 +46,17 @@ def connect():
     try:
         flow = new_flow()
         url, state = flow.authorization_url(access_type="offline", prompt="consent", include_granted_scopes="false")
-        _pending.clear()
-        _pending[state] = (flow, time.monotonic())
+        with _oauth_lock:
+            _pending.clear()
+            _pending[state] = (flow, time.monotonic())
         return {"authorization_url": url}
     except GmailAuthError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 @callback_router.get("/")
 def callback(state: str, code: str = "", error: str = ""):
-    pending = _pending.pop(state, None)
+    with _oauth_lock:
+        pending = _pending.pop(state, None)
     if not pending or time.monotonic() - pending[1] > 600:
         raise HTTPException(400, "OAuth state is invalid or expired; start again")
     if error or not code:
@@ -63,10 +67,11 @@ def callback(state: str, code: str = "", error: str = ""):
         if not flow.credentials.refresh_token:
             raise GmailAuthError("Google did not return a refresh token; reconnect Gmail")
         email = mailbox_email(flow.credentials)
-        needs_binding = mailbox_needs_binding(email)
-        save_credentials(flow.credentials)
-        if needs_binding:
-            save_mailbox(email)
+        with _oauth_lock:
+            needs_binding = mailbox_needs_binding(email)
+            save_credentials(flow.credentials)
+            if needs_binding:
+                save_mailbox(email)
     except OAuth2Error as exc:
         raise HTTPException(400, "Gmail authorization code is invalid or expired; start again") from exc
     except (RequestException, GmailTransportError, HttpError) as exc:

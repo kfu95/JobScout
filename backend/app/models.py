@@ -89,4 +89,3 @@ class GmailSyncState(Base):
     __tablename__ = "gmail_sync_state"
     id: Mapped[int] = mapped_column(primary_key=True)
     history_id: Mapped[str] = mapped_column(String(255))
-    filter_hash: Mapped[str] = mapped_column(String(64))

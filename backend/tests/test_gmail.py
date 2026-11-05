@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -15,6 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
+from app import gmail_api
 from app.gmail_auth import GmailAuthError, GmailTransportError, load_credentials
 from app.gmail_sync import GmailSyncError, sync_gmail
 from app.main import app
@@ -38,6 +42,7 @@ class Gmail:
         self.expired = False
         self.history_start = []
         self.full_list_calls = 0
+        self.get_ids = []
         self.last_get_id = None
         self.query_matches = {"a", "b"}
         self.message_labels = {}
@@ -62,9 +67,15 @@ class Gmail:
             if self.expired:
                 return Request(HttpError(SimpleNamespace(status=404, reason="expired"), b"{}"))
             if not kwargs["pageToken"]:
-                return Request({"history": [{"messagesAdded": [{"message": {"id": i}} for i in self.history_ids[:1]]}], "nextPageToken": "next"})
+                return Request({"history": [{"messagesAdded": [{"message": {
+                    "id": i,
+                    "labelIds": self.message_labels.get(i, ["job-alerts"]),
+                }} for i in self.history_ids[:1]]}], "nextPageToken": "next"})
             return Request({"history": [{
-                "messagesAdded": [{"message": {"id": i}} for i in self.history_ids[1:]],
+                "messagesAdded": [{"message": {
+                    "id": i,
+                    "labelIds": self.message_labels.get(i, ["job-alerts"]),
+                }} for i in self.history_ids[1:]],
                 "labelsAdded": [{"message": {"id": i}} for i in self.label_history_ids],
             }]})
         if kwargs["q"] != self.full_query:
@@ -83,6 +94,7 @@ class Gmail:
     def get(self, **kwargs):
         assert kwargs["format"] == "metadata"
         self.last_get_id = kwargs["id"]
+        self.get_ids.append(kwargs["id"])
         return Request({"threadId": "thread", "internalDate": "1700000000000", "snippet": "s" * 600,
                         "labelIds": self.message_labels.get(kwargs["id"], ["job-alerts"]),
                         "payload": {"headers": [{"name": "Subject", "value": "Job"}, {"name": "Message-ID", "value": "<id>"}]}})
@@ -92,6 +104,7 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))
     monkeypatch.setenv("GMAIL_QUERY", "jobs")
     monkeypatch.setenv("GMAIL_LABELS", "job-alerts")
+    (tmp_path / "mailbox").write_text("user@example.com\n")
     gmail = Gmail()
     monkeypatch.setattr("app.gmail_sync.load_credentials", lambda: object())
     monkeypatch.setattr("app.gmail_sync.build", lambda *args, **kwargs: gmail)
@@ -106,12 +119,14 @@ def test_full_incremental_expiry_and_idempotence(setup):
     assert sync_gmail(db) == {"added": 2, "mode": "full"}
     assert len(db.scalar(select(GmailMessage).where(GmailMessage.provider_message_id == "a")).snippet) == 500
     assert gmail.full_list_calls == 2
-    gmail.history_ids = ["c", "d", "wrong-query", "wrong-label"]
+    gmail.history_ids = ["spam", "c", "d", "wrong-query", "wrong-label"]
     gmail.label_history_ids = ["label-only"]
     gmail.query_matches.update({"c", "d", "wrong-label"})
+    gmail.message_labels["spam"] = ["SPAM"]
     gmail.message_labels["wrong-label"] = ["other"]
     assert sync_gmail(db) == {"added": 2, "mode": "incremental"}
     assert gmail.full_list_calls == 2
+    assert "spam" not in gmail.get_ids
     assert db.scalar(
         select(GmailMessage.id).where(GmailMessage.provider_message_id == "label-only")
     ) is None
@@ -133,14 +148,28 @@ def test_sync_rejects_a_different_mailbox_without_mutating_state(setup, tmp_path
     assert db.scalar(select(func.count(GmailMessage.id))) == 0
     assert gmail.full_list_calls == 0
 
+def test_sync_requires_callback_mailbox_binding(setup, tmp_path):
+    gmail, db = setup
+    (tmp_path / "mailbox").unlink()
+    with pytest.raises(GmailAuthError, match="identity is missing"):
+        sync_gmail(db)
+    assert not (tmp_path / "mailbox").exists()
+    assert db.get(GmailSyncState, 1) is None
+    assert gmail.full_list_calls == 0
+
 def test_filter_change_stays_history_only(setup, monkeypatch):
     gmail, db = setup
     assert sync_gmail(db) == {"added": 2, "mode": "full"}
-    previous_hash = db.get(GmailSyncState, 1).filter_hash
     monkeypatch.setenv("GMAIL_QUERY", "from:alerts@example.com")
     assert sync_gmail(db) == {"added": 0, "mode": "incremental"}
     assert gmail.full_list_calls == 2
-    assert db.get(GmailSyncState, 1).filter_hash != previous_hash
+
+@pytest.mark.parametrize("query", ['subject:"after: interview"', "subject:after:interview"])
+def test_operator_like_subject_queries_are_accepted(setup, monkeypatch, query):
+    gmail, db = setup
+    monkeypatch.setenv("GMAIL_QUERY", query)
+    gmail.full_query = query
+    assert sync_gmail(db) == {"added": 2, "mode": "full"}
 
 @pytest.mark.parametrize(
     ("query", "labels", "message"),
@@ -256,6 +285,48 @@ def test_oauth_rejects_a_different_mailbox_before_saving(monkeypatch, tmp_path):
     assert "account switching is not supported" in response.json()["detail"]
     assert saved == []
     assert (tmp_path / "mailbox").read_text() == "first@example.com\n"
+
+def test_concurrent_oauth_callbacks_cannot_switch_mailboxes(monkeypatch, tmp_path):
+    class Flow:
+        def __init__(self, email):
+            self.credentials = SimpleNamespace(refresh_token="refresh", email=email)
+
+        def fetch_token(self, **kwargs):
+            assert kwargs == {"code": "code", "timeout": 10}
+
+    barrier = threading.Barrier(2)
+    saved = []
+    real_mailbox_needs_binding = gmail_api.mailbox_needs_binding
+
+    def mailbox_email(credentials):
+        barrier.wait()
+        return credentials.email
+
+    def slow_mailbox_needs_binding(email):
+        needs_binding = real_mailbox_needs_binding(email)
+        if needs_binding:
+            time.sleep(0.05)
+        return needs_binding
+
+    monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))
+    monkeypatch.setattr("app.gmail_api.mailbox_email", mailbox_email)
+    monkeypatch.setattr("app.gmail_api.mailbox_needs_binding", slow_mailbox_needs_binding)
+    monkeypatch.setattr("app.gmail_api.save_credentials", saved.append)
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    with gmail_api._oauth_lock:
+        gmail_api._pending.clear()
+        gmail_api._pending.update({
+            "first-state": (Flow("first@example.com"), time.monotonic()),
+            "second-state": (Flow("second@example.com"), time.monotonic()),
+        })
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(
+            lambda state: client.get("/", params={"state": state, "code": "code"}),
+            ["first-state", "second-state"],
+        ))
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    assert len(saved) == 1
+    assert (tmp_path / "mailbox").read_text().strip() == saved[0].email
 
 @pytest.mark.parametrize(
     ("failure", "expected_status"),
