@@ -114,12 +114,17 @@ def _sync(db, query, labels):
         for message_id in candidates:
             if db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == message_id)):
                 continue
-            preflight_request = gmail_transport_call(
-                lambda: messages.get(
-                    userId="me", id=message_id, format="minimal", fields="id,labelIds"
+            try:
+                preflight_request = gmail_transport_call(
+                    lambda: messages.get(
+                        userId="me", id=message_id, format="minimal", fields="id,labelIds"
+                    )
                 )
-            )
-            preflight = gmail_transport_call(preflight_request.execute)
+                preflight = gmail_transport_call(preflight_request.execute)
+            except HttpError as exc:
+                if exc.resp.status == 404:
+                    continue
+                raise
             if set(preflight.get("labelIds", [])).intersection({"SPAM", "TRASH"}):
                 continue
             try:

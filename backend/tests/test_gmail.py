@@ -45,6 +45,7 @@ class Gmail:
         self.full_list_calls = 0
         self.get_ids = []
         self.preflight_ids = []
+        self.preflight_creation_errors = {}
         self.preflight_errors = {}
         self.last_get_id = None
         self.query_matches = {"a", "b"}
@@ -102,6 +103,8 @@ class Gmail:
             assert kwargs["fields"] == "id,labelIds"
             assert "metadataHeaders" not in kwargs
             self.preflight_ids.append(kwargs["id"])
+            if kwargs["id"] in self.preflight_creation_errors:
+                raise self.preflight_creation_errors[kwargs["id"]]
             if kwargs["id"] in self.preflight_errors:
                 return Request(self.preflight_errors[kwargs["id"]])
             return Request({
@@ -221,7 +224,28 @@ def test_full_sync_rechecks_current_filters_before_storing(
     if set(current_labels).intersection({"SPAM", "TRASH"}):
         assert "a" not in gmail.get_ids
 
-def test_preflight_failure_preserves_history_cursor(setup):
+@pytest.mark.parametrize("stage", ["creation", "execution"])
+def test_missing_preflight_candidate_advances_history_cursor(setup, stage):
+    gmail, db = setup
+    assert sync_gmail(db) == {"added": 2, "mode": "full"}
+    gmail.profile_result["historyId"] = "200"
+    gmail.history_ids = ["deleted", "later"]
+    gmail.query_matches.add("later")
+    error = HttpError(SimpleNamespace(status=404, reason="missing"), b"{}")
+    errors = (
+        gmail.preflight_creation_errors if stage == "creation" else gmail.preflight_errors
+    )
+    errors["deleted"] = error
+    assert sync_gmail(db) == {"added": 1, "mode": "incremental"}
+    assert db.get(GmailSyncState, 1).history_id == "200"
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "deleted")
+    ) is None
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "later")
+    ) is not None
+
+def test_transient_preflight_failure_preserves_history_cursor(setup):
     gmail, db = setup
     assert sync_gmail(db) == {"added": 2, "mode": "full"}
     gmail.profile_result["historyId"] = "200"
