@@ -16,10 +16,20 @@ def remotive_salary_max(text):
     text = str(text or "")
     if re.search(r"(?i)\b(?:hourly?|hrs?|daily|days?|weekly|weeks?|monthly|months?)\b|/(?:hr|day|week|month)\b", text):
         return None
-    if "$" not in text and not re.search(r"(?i)\bUSD\b", text):
-        return None
-    values = re.findall(r"(?i)(?<![\w.])(?:USD\s*)?\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k?)", text)
-    amounts = [float(n.replace(",", "")) * (1000 if suffix else 1) for n, suffix in values]
+    amount_pattern = r"(\d[\d,]*(?:\.\d+)?)\s*(k?)"
+    separator = r"(?:-|–|—|to)"
+    amounts = []
+    usd_patterns = (
+        rf"\$\s*{amount_pattern}(?:\s*{separator}\s*\$?\s*{amount_pattern})?",
+        rf"\bUSD\b(?:\s+equivalent)?\s*:?\s*\$?\s*{amount_pattern}(?:\s*{separator}\s*\$?\s*{amount_pattern})?",
+        rf"{amount_pattern}(?:\s*{separator}\s*{amount_pattern})?\s*\bUSD\b",
+    )
+    for pattern in usd_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            groups = match.groups()
+            for index in range(0, len(groups), 2):
+                if groups[index]:
+                    amounts.append(float(groups[index].replace(",", "")) * (1000 if groups[index + 1] else 1))
     amounts = [amount for amount in amounts if amount >= 1000]
     return max(amounts) if amounts else None
 

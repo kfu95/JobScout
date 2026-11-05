@@ -9,12 +9,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 from sqlalchemy import select
 
-from .models import Board, Job, JobVersion, now
+from .models import JOB_LOCATION_MAX_LENGTH, Board, Job, JobVersion, now
 from .scoring import score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
 SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,150}$")
-LOCATION_MAX_LENGTH = 500
 
 
 def plain(value):
@@ -45,9 +44,9 @@ def positive_max(values):
 
 def persisted_location(value):
     value = str(value or "")
-    if len(value) <= LOCATION_MAX_LENGTH:
+    if len(value) <= JOB_LOCATION_MAX_LENGTH:
         return value
-    return value[:LOCATION_MAX_LENGTH - 3] + "..."
+    return value[:JOB_LOCATION_MAX_LENGTH - 3] + "..."
 
 
 def normalize(provider, item):
@@ -111,6 +110,13 @@ def canonical_url(url):
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urlencode(sorted(query)), ""))
 
 
+def existing_url_index(db):
+    return {
+        canonical_url(apply_url): job_id
+        for job_id, apply_url in db.execute(select(Job.id, Job.apply_url)).all()
+    }
+
+
 async def fetch_board(client: httpx.AsyncClient, board: Board):
     from .discovery import polite_get
     if board.provider not in ALLOWED_PROVIDERS or not SLUG_PATTERN.fullmatch(board.slug):
@@ -151,7 +157,7 @@ def persist_snapshot(
         observed_external_ids = set(unique_postings)
     old_jobs = {j.external_id: j for j in db.scalars(select(Job).where(Job.board_id == board.id)).all()}
     if existing_urls is None:
-        existing_urls = {canonical_url(j.apply_url): j.id for j in db.scalars(select(Job)).all()}
+        existing_urls = existing_url_index(db)
     stats = {"new": 0, "updated": 0, "closed": 0, "seen": len(unique_postings)}
     for external_id, p in unique_postings.items():
         digest = content_hash(p)
@@ -228,7 +234,7 @@ async def collect_all(db):
             db.rollback()
             logging.getLogger(__name__).exception("Directory refresh failed")
             results.append({"provider": "directory", "ok": False, "error": str(exc)[:250]})
-        existing_urls = {canonical_url(j.apply_url): j.id for j in db.scalars(select(Job)).all()}
+        existing_urls = existing_url_index(db)
         results.extend(await collect_aggregators(db, client, preferences, existing_urls))
         state = db.get(DiscoveryState, "board_cursor")
         cursor = int(state.value) if state and state.value else 0

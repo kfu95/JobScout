@@ -3,7 +3,7 @@ import httpx
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, remotive_posting, store_aggregator, usajobs_posting
+from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, remotive_posting, remotive_salary_max, store_aggregator, usajobs_posting
 from app.collectors import collect_all, normalize, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
@@ -50,6 +50,13 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
         "url": "https://remotive.com/job/6", "salary": "$40,000 - $50,000",
     })
     assert dollar_salary["salary_max"] == 50000
+    assert remotive_salary_max("$40k - 50k") == 50000
+    mixed_salary = remotive_posting({
+        "id": 7, "company_name": "D", "title": "Senior Software Engineer", "candidate_required_location": "USA",
+        "url": "https://remotive.com/job/7", "salary": "€200k - €220k (USD equivalent $140k - $145k)",
+    })
+    assert mixed_salary["salary_max"] == 145000
+    assert not matches(mixed_salary, PREFS)
 
 
 def test_ats_provider_contract_normalization():
