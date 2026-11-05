@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -34,6 +35,9 @@ class Gmail:
         self.last_get_id = None
         self.query_matches = {"a", "b"}
         self.message_labels = {}
+        self.full_query = "jobs"
+        self.expected_labels = ["job-alerts"]
+        self.include_spam_trash = False
 
     def users(self):
         return self
@@ -55,12 +59,14 @@ class Gmail:
             if not kwargs["pageToken"]:
                 return Request({"history": [{"messagesAdded": [{"message": {"id": i}} for i in self.history_ids[:1]]}], "nextPageToken": "next"})
             return Request({"history": [{"labelsAdded": [{"message": {"id": i}} for i in self.history_ids[1:]]}]})
-        if kwargs["q"] != "jobs":
-            assert kwargs["q"] == "(jobs) after:1699999999 before:1700000001"
-            assert kwargs["labelIds"] == ["job-alerts"]
+        if kwargs["q"] != self.full_query:
+            assert kwargs["q"] == f"({self.full_query}) after:1699999999 before:1700000001"
+            assert kwargs["labelIds"] == self.expected_labels
+            assert kwargs["includeSpamTrash"] is self.include_spam_trash
             matches = [{"id": self.last_get_id}] if self.last_get_id in self.query_matches else []
             return Request({"messages": matches})
-        assert kwargs["labelIds"] == ["job-alerts"]
+        assert kwargs["labelIds"] == self.expected_labels
+        assert kwargs["includeSpamTrash"] is self.include_spam_trash
         self.full_list_calls += 1
         if not kwargs["pageToken"]:
             return Request({"messages": [{"id": self.ids[0]}], "nextPageToken": "next"})
@@ -78,6 +84,7 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))
     monkeypatch.setenv("GMAIL_QUERY", "jobs")
     monkeypatch.setenv("GMAIL_LABELS", "job-alerts")
+    monkeypatch.setenv("GMAIL_RECONCILE_SECONDS", "86400")
     gmail = Gmail()
     monkeypatch.setattr("app.gmail_sync.load_credentials", lambda: object())
     monkeypatch.setattr("app.gmail_sync.build", lambda *args, **kwargs: gmail)
@@ -105,6 +112,41 @@ def test_full_incremental_expiry_and_idempotence(setup):
     assert sync_gmail(db) == {"added": 1, "mode": "full"}
     assert db.scalar(select(func.count(GmailMessage.id))) == 5
     assert db.get(GmailSyncState, 1).history_id == "100"
+
+def test_periodic_reconciliation_catches_relative_query_matches(setup, monkeypatch, tmp_path):
+    gmail, db = setup
+    monkeypatch.setenv("GMAIL_QUERY", "older_than:1d")
+    gmail.full_query = "older_than:1d"
+    assert sync_gmail(db) == {"added": 2, "mode": "full"}
+    gmail.ids.append("relative")
+    assert sync_gmail(db) == {"added": 0, "mode": "incremental"}
+    assert db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == "relative")) is None
+    os.utime(tmp_path / ".last-full-sync", (0, 0))
+    assert sync_gmail(db) == {"added": 1, "mode": "full"}
+    assert db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == "relative"))
+
+@pytest.mark.parametrize(
+    ("query", "labels", "system_label"),
+    [("in:spam", "", "SPAM"), ("", "TRASH", "TRASH")],
+)
+def test_explicit_spam_and_trash_filters_are_honored(
+    setup, monkeypatch, query, labels, system_label
+):
+    gmail, db = setup
+    monkeypatch.setenv("GMAIL_QUERY", query)
+    monkeypatch.setenv("GMAIL_LABELS", labels)
+    gmail.full_query = query or None
+    gmail.expected_labels = [labels] if labels else None
+    gmail.include_spam_trash = True
+    gmail.message_labels.update({"a": [system_label], "b": [system_label]})
+    assert sync_gmail(db) == {"added": 2, "mode": "full"}
+    gmail.history_ids = ["system-message"]
+    gmail.query_matches.add("system-message")
+    gmail.message_labels["system-message"] = [system_label]
+    assert sync_gmail(db) == {"added": 1, "mode": "incremental"}
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "system-message")
+    )
 
 def test_revoked_credentials_are_explicit(monkeypatch, tmp_path):
     monkeypatch.setenv("GMAIL_CREDENTIAL_DIR", str(tmp_path))

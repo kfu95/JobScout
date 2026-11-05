@@ -32,6 +32,8 @@ if [[ ! -f config/profile.json ]]; then
   chmod 600 config/profile.json
   echo 'Created config/profile.json; edit with your verified career facts before preparing resumes.'
 fi
+mkdir -p config/gmail
+chmod 700 config/gmail
 
 docker compose up --build -d
 printf '\nDashboard: http://localhost:3000\nAPI docs:  http://localhost:8000/docs\n\n'
