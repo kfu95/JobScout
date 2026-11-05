@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 from app.db import Base
 from app.models import Board, Job, JobVersion
 import app.collectors as collectors
+import app.scoring as scoring
 from app.collectors import normalize, content_hash, persist_snapshot
 from app.onboarding import Preferences, save_preferences
-from app.scoring import baseline_score, prepare_packet
+from app.scoring import baseline_score, prepare_packet, score_posting
 
 
 def test_parse_providers():
@@ -62,6 +63,22 @@ def test_scoring_and_verified_packets():
     assert baseline_score({"title": "Software Engineer", "location": "Berlin / Hybrid", "description": ""}, profile, hybrid_preferences)[0] == plain_score + 15
     packet = prepare_packet({"title": "Senior Backend Engineer", "company": "A", "location": "New York", "description": "Python"}, profile)
     assert packet["selected_facts"][0]["id"] == "fact1"
+
+
+def test_ai_scoring_preserves_selected_seniority(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ENABLE_AI_SCORING", "true")
+    monkeypatch.setattr(
+        scoring,
+        "_ai_parse",
+        lambda *args, **kwargs: scoring.FitResult(score=60, reasoning="Fit", strengths=[], gaps=[]),
+    )
+    preferences = Preferences(target_titles=["software engineer"], seniority=["staff"]).model_dump()
+    profile = {"skills": []}
+    plain = score_posting({"title": "Software Engineer", "location": "", "description": ""}, profile, preferences)
+    staff = score_posting({"title": "Staff Software Engineer", "location": "", "description": ""}, profile, preferences)
+    assert plain[0] == 60 and plain[2] == "AI"
+    assert staff[0] == plain[0] + 15 and staff[2] == "AI"
 
 
 def test_collection_uses_preferences_current_after_fetch(monkeypatch):

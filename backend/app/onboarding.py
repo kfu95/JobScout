@@ -57,6 +57,18 @@ def preference_score_lock():
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+@contextmanager
+def fact_store_lock():
+    path = storage_dir() / ".facts.lock"
+    with path.open("a") as lock:
+        path.chmod(0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def write_private(path, data):
     path = Path(path)
     fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
@@ -82,7 +94,7 @@ def write_private(path, data):
         raise
 
 
-def load_facts(profile):
+def _load_facts(profile):
     path = storage_dir() / "facts.json"
     if not path.exists():
         facts = [Fact(**{**fact, "id": str(fact.get("id") or uuid.uuid4()), "verified": fact.get("verified", True)}).model_dump() for fact in profile.get("verified_experience", [])]
@@ -90,8 +102,30 @@ def load_facts(profile):
     return json.loads(path.read_text())
 
 
-def save_facts(facts):
+def _save_facts(facts):
     write_private(storage_dir() / "facts.json", json.dumps(facts, ensure_ascii=False, indent=2).encode())
+
+
+def load_facts(profile):
+    with fact_store_lock():
+        return _load_facts(profile)
+
+
+def save_facts(facts):
+    with fact_store_lock():
+        _save_facts(facts)
+
+
+def update_stored_fact(profile, fact_id, updated):
+    with fact_store_lock():
+        facts = _load_facts(profile)
+        for index, existing in enumerate(facts):
+            if existing["id"] == fact_id:
+                if existing != updated:
+                    facts[index] = updated
+                    _save_facts(facts)
+                return updated
+    return None
 
 
 def load_preferences(profile):
@@ -120,7 +154,9 @@ def parse_resume(text):
     facts = []
     current = None
     section = ""
-    date_pattern = re.compile(r"\b(?:19|20)\d{2}\s*(?:-|–|—|to)\s*(?:(?:19|20)\d{2}|present|current)\b", re.I)
+    month = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+    month_year = rf"(?:{month}\s+)?(?:19|20)\d{{2}}"
+    date_pattern = re.compile(rf"\b{month_year}\s*(?:-|–|—|to)\s*(?:{month_year}|present|current)\b", re.I)
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -152,6 +188,7 @@ def upload_resume(filename, content, profile):
     facts = parse_resume(text)
     if not facts:
         raise ValueError("No career facts recognized; check the resume format")
-    verified = [fact for fact in load_facts(profile) if fact.get("verified") is True]
-    save_facts(verified + facts)
+    with fact_store_lock():
+        verified = [fact for fact in _load_facts(profile) if fact.get("verified") is True]
+        _save_facts(verified + facts)
     return facts

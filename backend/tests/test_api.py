@@ -70,12 +70,29 @@ def test_changed_fact_invalidates_approved_packet(api_engine):
         assert client.put(f"/api/onboarding/facts/{fact['id']}", json=changed).status_code == 200
         detail = client.get(f"/api/jobs/{job_id}").json()
         assert detail["application_status"] == "prepared"
-        assert detail["packet"] == {}
+        assert detail["packet"] is None
         assert client.post(f"/api/jobs/{job_id}/reported").status_code == 409
 
     with Session(api_engine) as db:
         application = db.query(Application).filter_by(job_id=job_id).one()
         assert application.approved_at is None
+
+
+def test_equal_fact_retry_reconciles_approved_packet(api_engine):
+    old_fact = {"id": "fact-1", "role": "Engineer", "company": "Example Co", "dates": "2020 - 2024", "bullets": ["Built services"], "skills": ["Python"], "verified": True}
+    updated_fact = {**old_fact, "bullets": ["Built reliable services"]}
+    save_facts([updated_fact])
+    job_id = add_job(api_engine)
+    with Session(api_engine) as db:
+        db.add(Application(job_id=job_id, status="approved", packet={"selected_facts": [old_fact]}, approved_at=now()))
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.put(f"/api/onboarding/facts/{old_fact['id']}", json=updated_fact)
+        assert response.status_code == 200
+        detail = client.get(f"/api/jobs/{job_id}").json()
+        assert detail["application_status"] == "prepared"
+        assert detail["packet"] is None
 
 
 def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):

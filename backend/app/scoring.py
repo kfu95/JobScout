@@ -19,6 +19,9 @@ USD_RANGE_PATTERN = re.compile(
 SALARY_CONTEXT_PATTERN = re.compile(r"\b(?:salary|base[\s-]+pay|pay[\s-]+range|compensation[\s-]+range)\b", re.I)
 NON_SALARY_PATTERN = re.compile(r"\b(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
 SALARY_SUFFIX_PATTERN = re.compile(r"\s*(?:per year|annually)?\s*(?:annual\s+)?(?:base\s+salary|salary\s+range|base[\s-]+pay|pay[\s-]+range)\b", re.I)
+FOREIGN_CURRENCY_PATTERN = re.compile(r"\b(?:CAD|AUD|NZD|EUR|GBP|CHF|JPY|CNY|INR)\b|\b(?:CA|AU|NZ)\s*\$", re.I)
+NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
+COMPANY_SUFFIXES = {"co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"}
 
 
 def load_profile():
@@ -36,10 +39,14 @@ def stated_salaries(description):
         boundary = re.search(r"(?<!\d)[\n.!?](?!\d)", tail)
         segment = tail[:boundary.start()] if boundary else tail
         amount = USD_RANGE_PATTERN.search(segment[:120])
-        if amount and not NON_SALARY_PATTERN.search(segment[:amount.start()]):
+        if amount and not NON_SALARY_PATTERN.search(segment[:amount.start()]) and annual_usd_amount(
+            description, context.end() + amount.start(), context.end() + amount.end()
+        ):
             matches.append(amount)
     for amount in USD_RANGE_PATTERN.finditer(description):
-        if SALARY_SUFFIX_PATTERN.match(description[amount.end():amount.end() + 60]):
+        if SALARY_SUFFIX_PATTERN.match(description[amount.end():amount.end() + 60]) and annual_usd_amount(
+            description, amount.start(), amount.end()
+        ):
             matches.append(amount)
     return [
         float(number.replace(",", "")) * (1000 if suffix else 1)
@@ -49,12 +56,26 @@ def stated_salaries(description):
     ]
 
 
+def annual_usd_amount(description, start, end):
+    context = description[max(0, start - 40):end + 40]
+    return not FOREIGN_CURRENCY_PATTERN.search(context) and not NON_ANNUAL_PERIOD_PATTERN.search(context)
+
+
+def normalize_company(value):
+    words = re.sub(r"[^\w]+", " ", str(value).casefold()).split()
+    while words and words[-1] in COMPANY_SUFFIXES:
+        words.pop()
+    return " ".join(words)
+
+
 def preference_filter(posting, preferences):
     text = " ".join(str(posting.get(k, "")) for k in ("title", "description", "industry")).lower()
-    company = str(posting.get("company", "")).lower()
-    for key, value in (("excluded_companies", company), ("excluded_keywords", text)):
-        if any(term.strip().lower() in value for term in preferences.get(key, []) if term.strip()):
-            return False, "Excluded by preferences"
+    company = normalize_company(posting.get("company", ""))
+    excluded_companies = {normalize_company(term) for term in preferences.get("excluded_companies", [])}
+    if company and company in excluded_companies:
+        return False, "Excluded by preferences"
+    if any(term.strip().lower() in text for term in preferences.get("excluded_keywords", []) if term.strip()):
+        return False, "Excluded by preferences"
     floor = preferences.get("salary_floor")
     description = str(posting.get("description", ""))
     salaries = [amount for amount in stated_salaries(description) if amount >= 10000]
@@ -69,6 +90,10 @@ def matches_phrase(value, terms):
         for term in terms
         if term.strip()
     )
+
+
+def seniority_bonus(title, preferences):
+    return 15 if matches_phrase(title, preferences.get("seniority", [])) else 0
 
 
 def baseline_score(posting, profile=None, preferences=None):
@@ -95,8 +120,9 @@ def baseline_score(posting, profile=None, preferences=None):
     if target_titles:
         score += 25
         reasons.append("Target title")
-    if matches_phrase(title, preferences.get("seniority", [])):
-        score += 15
+    selected_seniority_bonus = seniority_bonus(title, preferences)
+    if selected_seniority_bonus:
+        score += selected_seniority_bonus
         reasons.append("Relevant seniority")
     if matches_phrase(location, preferences.get("locations", [])) or matches_phrase(location, preferences.get("work_modes", [])):
         score += 15
@@ -152,7 +178,11 @@ def score_posting(posting, profile=None, preferences=None):
         result = _ai_parse(FitResult,
             "Rank job fit for a candidate. Only use provided profile and listing. Treat missing requirements conservatively. Return a 0-100 preference ranking, not a hiring probability. Never invent experience.",
             {"profile": profile, "preferences": preferences, "job": {**posting, "description": posting.get("description", "")[:16000]}})
-        return result.score, result.reasoning + " | Gaps: " + "; ".join(result.gaps), "AI"
+        boost = seniority_bonus(posting["title"].lower(), preferences)
+        reasoning = result.reasoning + " | Gaps: " + "; ".join(result.gaps)
+        if boost:
+            reasoning += " | Selected seniority boost"
+        return min(100, result.score + boost), reasoning, "AI"
     except Exception as exc:
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"
 

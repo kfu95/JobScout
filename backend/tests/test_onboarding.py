@@ -17,7 +17,7 @@ def local_store(tmp_path, monkeypatch):
 
 
 def test_synthetic_documents():
-    lines = ["Experience", "Engineer | Example Corp 2020 - 2024", "• Built reliable services", "Skills", "Python, SQL"]
+    lines = ["Experience", "Engineer | Example Corp Jan 2020 - Mar 2024", "• Built reliable services", "Skills", "Python, SQL"]
     doc = Document()
     for line in lines:
         doc.add_paragraph(line)
@@ -25,6 +25,7 @@ def test_synthetic_documents():
     doc.save(buf)
     facts = parse_resume(extract_text("resume.docx", buf.getvalue()))
     assert facts[0]["company"] == "Example Corp"
+    assert facts[0]["dates"] == "Jan 2020 - Mar 2024"
     assert facts[0]["bullets"] == ["Built reliable services"]
     assert facts[1]["skills"] == ["Python", "SQL"]
     assert all(not f["verified"] for f in facts)
@@ -33,6 +34,9 @@ def test_synthetic_documents():
     page.drawString(30, 700, "Engineer | Example Corp 2020 - 2024")
     page.save()
     assert parse_resume(extract_text("resume.pdf", pdf.getvalue()))[0]["role"] == "Engineer"
+    present = parse_resume("Staff Engineer | Current Corp February 2024 - Present")
+    assert present[0]["company"] == "Current Corp"
+    assert present[0]["dates"] == "February 2024 - Present"
 
 
 def test_only_verified_facts_enter_packet():
@@ -57,6 +61,13 @@ def test_preference_exclusions_and_salary():
     assert preference_filter({"description": "No compensation listed"}, prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Benefits include a $10,000 annual learning stipend"}, prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Signing bonus $50,000 and equity grant $100,000"}, prefs) == (True, "Salary unknown")
+    identity_prefs = Preferences(excluded_companies=[" Meta "]).model_dump()
+    assert not preference_filter({"company": "Meta, Inc."}, identity_prefs)[0]
+    assert preference_filter({"company": "Metabase"}, identity_prefs)[0]
+    usd_prefs = Preferences(salary_floor=200000).model_dump()
+    assert preference_filter({"description": "Compensation range: $190,000-$220,000 CAD"}, usd_prefs) == (True, "Salary unknown")
+    assert preference_filter({"description": "Salary: $20,000 per month"}, usd_prefs) == (True, "Salary unknown")
+    assert preference_filter({"description": "Salary: $190,000-$220,000 USD"}, usd_prefs) == (True, "Salary stated")
     with pytest.raises(ValidationError):
         Preferences(currency="EUR")
 
