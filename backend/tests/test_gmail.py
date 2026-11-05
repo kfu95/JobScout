@@ -43,6 +43,7 @@ class Gmail:
         self.history_start = []
         self.full_list_calls = 0
         self.get_ids = []
+        self.history_without_labels = set()
         self.last_get_id = None
         self.query_matches = {"a", "b"}
         self.message_labels = {}
@@ -61,21 +62,23 @@ class Gmail:
     def getProfile(self, **kwargs):
         return Request({"emailAddress": "user@example.com", "historyId": "100"})
 
+    def history_message(self, message_id):
+        message = {"id": message_id}
+        if message_id not in self.history_without_labels:
+            message["labelIds"] = self.message_labels.get(message_id, ["job-alerts"])
+        return {"message": message}
+
     def list(self, **kwargs):
         if "startHistoryId" in kwargs:
             self.history_start.append(kwargs["startHistoryId"])
             if self.expired:
                 return Request(HttpError(SimpleNamespace(status=404, reason="expired"), b"{}"))
             if not kwargs["pageToken"]:
-                return Request({"history": [{"messagesAdded": [{"message": {
-                    "id": i,
-                    "labelIds": self.message_labels.get(i, ["job-alerts"]),
-                }} for i in self.history_ids[:1]]}], "nextPageToken": "next"})
+                return Request({"history": [{
+                    "messagesAdded": [self.history_message(i) for i in self.history_ids[:1]],
+                }], "nextPageToken": "next"})
             return Request({"history": [{
-                "messagesAdded": [{"message": {
-                    "id": i,
-                    "labelIds": self.message_labels.get(i, ["job-alerts"]),
-                }} for i in self.history_ids[1:]],
+                "messagesAdded": [self.history_message(i) for i in self.history_ids[1:]],
                 "labelsAdded": [{"message": {"id": i}} for i in self.label_history_ids],
             }]})
         if kwargs["q"] != self.full_query:
@@ -119,14 +122,20 @@ def test_full_incremental_expiry_and_idempotence(setup):
     assert sync_gmail(db) == {"added": 2, "mode": "full"}
     assert len(db.scalar(select(GmailMessage).where(GmailMessage.provider_message_id == "a")).snippet) == 500
     assert gmail.full_list_calls == 2
-    gmail.history_ids = ["spam", "c", "d", "wrong-query", "wrong-label"]
+    gmail.history_ids = [
+        "spam", "trash", "missing-labels", "c", "d", "wrong-query", "wrong-label",
+    ]
     gmail.label_history_ids = ["label-only"]
     gmail.query_matches.update({"c", "d", "wrong-label"})
     gmail.message_labels["spam"] = ["SPAM"]
+    gmail.message_labels["trash"] = ["TRASH"]
+    gmail.history_without_labels.add("missing-labels")
     gmail.message_labels["wrong-label"] = ["other"]
     assert sync_gmail(db) == {"added": 2, "mode": "incremental"}
     assert gmail.full_list_calls == 2
     assert "spam" not in gmail.get_ids
+    assert "trash" not in gmail.get_ids
+    assert "missing-labels" not in gmail.get_ids
     assert db.scalar(
         select(GmailMessage.id).where(GmailMessage.provider_message_id == "label-only")
     ) is None
@@ -135,6 +144,7 @@ def test_full_incremental_expiry_and_idempotence(setup):
     assert gmail.full_list_calls == 2
     gmail.expired = True
     gmail.ids += ["e"]
+    gmail.query_matches.add("e")
     assert sync_gmail(db) == {"added": 1, "mode": "full"}
     assert db.scalar(select(func.count(GmailMessage.id))) == 5
     assert db.get(GmailSyncState, 1).history_id == "100"
@@ -163,6 +173,30 @@ def test_filter_change_stays_history_only(setup, monkeypatch):
     monkeypatch.setenv("GMAIL_QUERY", "from:alerts@example.com")
     assert sync_gmail(db) == {"added": 0, "mode": "incremental"}
     assert gmail.full_list_calls == 2
+
+@pytest.mark.parametrize(
+    ("current_labels", "query_matches"),
+    [
+        (["SPAM"], True),
+        (["TRASH"], True),
+        (["other"], True),
+        (["job-alerts"], False),
+    ],
+)
+def test_full_sync_rechecks_current_filters_before_storing(
+    setup, current_labels, query_matches
+):
+    gmail, db = setup
+    gmail.message_labels["a"] = current_labels
+    if not query_matches:
+        gmail.query_matches.remove("a")
+    assert sync_gmail(db) == {"added": 1, "mode": "full"}
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "a")
+    ) is None
+    assert db.scalar(
+        select(GmailMessage.id).where(GmailMessage.provider_message_id == "b")
+    ) is not None
 
 @pytest.mark.parametrize("query", ['subject:"after: interview"', "subject:after:interview"])
 def test_operator_like_subject_queries_are_accepted(setup, monkeypatch, query):

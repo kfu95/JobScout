@@ -100,7 +100,11 @@ def _sync(db, query, labels):
                 for record in history:
                     for item in record.get("messagesAdded", []):
                         message = item["message"]
-                        if not set(message.get("labelIds", [])).intersection({"SPAM", "TRASH"}):
+                        message_labels = message.get("labelIds")
+                        if (
+                            message_labels is not None
+                            and not set(message_labels).intersection({"SPAM", "TRASH"})
+                        ):
                             candidates.add(message["id"])
             except HttpError as exc:
                 if exc.resp.status != 404:
@@ -127,7 +131,7 @@ def _sync(db, query, labels):
                 if exc.resp.status == 404:
                     continue
                 raise
-            if incremental and not matches_filters(messages, message_id, message, query, labels):
+            if not matches_filters(messages, message_id, message, query, labels):
                 continue
             headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
             db.add(GmailMessage(provider_message_id=message_id, thread_id=message["threadId"],
