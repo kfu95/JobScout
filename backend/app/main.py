@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from .db import get_db, init_db
 from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead, now
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
-from .scoring import prepare_packet, load_profile, score_posting
-from .onboarding import Fact, Preferences, load_facts, load_preferences, save_preferences, update_stored_fact, upload_resume, preference_score_lock
+from .scoring import baseline_score, prepare_packet, load_profile
+from .onboarding import Fact, Preferences, load_facts, load_preferences, locked_facts, save_preferences, update_stored_fact, upload_resume, preference_score_lock
 from .pdf import packet_pdf
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 
@@ -50,7 +50,7 @@ def job_or_404(db, job_id):
         raise HTTPException(404, "Job not found")
     return job
 
-def serialize_job(job, board, application=None, include_description=False):
+def serialize_job(job, board, application=None, include_description=False, facts=None):
     data = {"id": job.id, "company": board.company, "provider": board.provider,
             "title": job.title, "location": job.location, "apply_url": job.apply_url,
             "is_open": job.is_open, "score": job.score, "score_reason": job.score_reason,
@@ -58,7 +58,8 @@ def serialize_job(job, board, application=None, include_description=False):
             "last_seen": job.last_seen, "application_status": application.status if application else "not_started"}
     if include_description:
         data["description"] = job.description
-        data["packet"] = application.packet if application and application.packet else None
+        packet = application.packet if application and application.packet else None
+        data["packet"] = packet if packet and packet_is_current(packet, facts) else None
         data["application_id"] = application.id if application else None
     return jsonable_encoder(data)
 
@@ -95,16 +96,17 @@ async def resume_upload(file: UploadFile = File(...)):
 def update_fact(fact_id: str, fact: Fact, db: Session = Depends(get_db)):
     if fact.id != fact_id:
         raise HTTPException(400, "Fact ID cannot change")
-    applications = db.scalars(select(Application).order_by(Application.id).with_for_update()).all()
     updated = fact.model_dump()
     stored = update_stored_fact(load_profile(), fact_id, updated)
     if stored is None:
         raise HTTPException(404, "Fact not found")
+    applications = db.scalars(select(Application).order_by(Application.id).with_for_update()).all()
     for application in applications:
         selected = application.packet.get("selected_facts", []) if application.packet else []
         stale = any(selected_fact.get("id") == fact_id and selected_fact != stored for selected_fact in selected)
-        if application.status == "approved" and stale:
-            application.status = "prepared"
+        if application.status in ("prepared", "skipped", "approved") and stale:
+            if application.status == "approved":
+                application.status = "prepared"
             application.packet = {}
             application.approved_at = None
             record_event(db, application, "materials_invalidated", f"Fact {fact_id} changed")
@@ -118,7 +120,7 @@ def update_preferences(preferences: Preferences, db: Session = Depends(get_db)):
         preference_data = preferences.model_dump()
         for job, board in db.execute(select(Job, Board).join(Board, Job.board_id == Board.id)):
             posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
-            job.score, job.score_reason, job.score_method = score_posting(posting, profile, preference_data)
+            job.score, job.score_reason, job.score_method = baseline_score(posting, profile, preference_data)
         save_preferences(preferences)
         db.commit()
     return preferences
@@ -169,7 +171,9 @@ def list_jobs(q: str = "", min_score: int = 0, open_only: bool = True, limit: in
 @app.get("/api/jobs/{job_id}")
 def job_detail(job_id: int, db: Session = Depends(get_db)):
     job = job_or_404(db, job_id)
-    return serialize_job(job, db.get(Board, job.board_id), db.scalar(select(Application).where(Application.job_id == job_id)), True)
+    application = db.scalar(select(Application).where(Application.job_id == job_id))
+    with locked_facts(load_profile()) as facts:
+        return serialize_job(job, db.get(Board, job.board_id), application, True, facts)
 
 @app.get("/api/jobs/{job_id}/versions")
 def job_versions(job_id: int, db: Session = Depends(get_db)):
@@ -184,18 +188,21 @@ def prepare(job_id: int, db: Session = Depends(get_db)):
     existing = application_for_update(db, job.id)
     if existing and existing.status not in ("prepared", "skipped"):
         raise HTTPException(409, "Application has advanced beyond preparation")
-    try:
-        packet = prepare_packet({"title": job.title, "company": db.get(Board, job.board_id).company,
-                                 "location": job.location, "description": job.description, "apply_url": job.apply_url})
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    row = existing or Application(job_id=job.id)
-    row.packet = packet
-    row.status = "prepared"
-    db.add(row)
-    db.flush()
-    record_event(db, row, "materials_prepared")
-    db.commit()
+    profile = load_profile()
+    with locked_facts(profile) as facts:
+        try:
+            packet = prepare_packet({"title": job.title, "company": db.get(Board, job.board_id).company,
+                                     "location": job.location, "description": job.description, "apply_url": job.apply_url},
+                                    profile, facts)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        row = existing or Application(job_id=job.id)
+        row.packet = packet
+        row.status = "prepared"
+        db.add(row)
+        db.flush()
+        record_event(db, row, "materials_prepared")
+        db.commit()
     return {"status": row.status, "packet": packet}
 
 @app.post("/api/jobs/{job_id}/decision")
@@ -248,8 +255,9 @@ def update_status(job_id: int, payload: StatusIn, db: Session = Depends(get_db))
     db.commit()
     return {"status": row.status}
 
-def packet_is_current(packet):
-    verified = {f["id"]: f for f in load_facts(load_profile()) if f.get("verified") is True}
+def packet_is_current(packet, facts=None):
+    facts = facts if facts is not None else load_facts(load_profile())
+    verified = {f["id"]: f for f in facts if f.get("verified") is True}
     return bool(packet.get("selected_facts")) and all(verified.get(f.get("id")) == f for f in packet["selected_facts"])
 
 @app.get("/api/jobs/{job_id}/resume.pdf")

@@ -1,4 +1,5 @@
 import pytest
+import app.scoring as scoring
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -40,8 +41,8 @@ def add_job(engine, external_id="1", title="Senior Software Engineer", score=90)
 
 def test_review_before_submission(monkeypatch, api_engine):
     job_id = add_job(api_engine)
-    monkeypatch.setattr("app.main.packet_is_current", lambda packet: True)
-    monkeypatch.setattr("app.main.prepare_packet", lambda posting: {
+    monkeypatch.setattr("app.main.packet_is_current", lambda packet, facts=None: True)
+    monkeypatch.setattr("app.main.prepare_packet", lambda posting, profile=None, facts=None: {
         "candidate_name": "Test Candidate", "candidate_email": "", "summary": "Verified", "skills": ["Python"],
         "selected_facts": [{"id":"one", "company":"Test", "role":"Engineer", "bullets":["True statement"]}],
         "why_company_draft": "Draft", "verification_notes": ["Check details"]})
@@ -78,6 +79,23 @@ def test_changed_fact_invalidates_approved_packet(api_engine):
         assert application.approved_at is None
 
 
+@pytest.mark.parametrize("status", ["prepared", "skipped"])
+def test_changed_fact_invalidates_other_pre_submission_packets(api_engine, status):
+    fact = {"id": "fact-1", "role": "Engineer", "company": "Example Co", "dates": "2020 - 2024", "bullets": ["Built services"], "skills": ["Python"], "verified": True}
+    save_facts([fact])
+    job_id = add_job(api_engine)
+    with Session(api_engine) as db:
+        db.add(Application(job_id=job_id, status=status, packet={"selected_facts": [fact]}))
+        db.commit()
+
+    changed = {**fact, "verified": False}
+    with TestClient(app) as client:
+        assert client.put(f"/api/onboarding/facts/{fact['id']}", json=changed).status_code == 200
+        detail = client.get(f"/api/jobs/{job_id}").json()
+        assert detail["application_status"] == status
+        assert detail["packet"] is None
+
+
 def test_equal_fact_retry_reconciles_approved_packet(api_engine):
     old_fact = {"id": "fact-1", "role": "Engineer", "company": "Example Co", "dates": "2020 - 2024", "bullets": ["Built services"], "skills": ["Python"], "verified": True}
     updated_fact = {**old_fact, "bullets": ["Built reliable services"]}
@@ -88,6 +106,9 @@ def test_equal_fact_retry_reconciles_approved_packet(api_engine):
         db.commit()
 
     with TestClient(app) as client:
+        stale_detail = client.get(f"/api/jobs/{job_id}").json()
+        assert stale_detail["application_status"] == "approved"
+        assert stale_detail["packet"] is None
         response = client.put(f"/api/onboarding/facts/{old_fact['id']}", json=updated_fact)
         assert response.status_code == 200
         detail = client.get(f"/api/jobs/{job_id}").json()
@@ -96,7 +117,9 @@ def test_equal_fact_retry_reconciles_approved_packet(api_engine):
 
 
 def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ENABLE_AI_SCORING", "true")
+    monkeypatch.setattr(scoring, "_ai_parse", lambda *args, **kwargs: pytest.fail("Preference save invoked AI scoring"))
     engineer_id = add_job(api_engine, "engineer", "Senior Software Engineer", 5)
     with Session(api_engine) as db:
         board = db.query(Board).one()
@@ -112,6 +135,7 @@ def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
         feed = client.get("/api/jobs", params={"min_score": 70}).json()
         assert [job["id"] for job in feed] == [engineer_id]
         assert client.get(f"/api/jobs/{engineer_id}").json()["score"] == 80
+        assert client.get(f"/api/jobs/{engineer_id}").json()["score_method"] == "heuristic"
         assert client.get(f"/api/jobs/{sales_id}").json()["score"] == 0
         assert client.get("/api/stats").json()["strong_matches"] == 1
 

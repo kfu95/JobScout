@@ -18,11 +18,15 @@ USD_RANGE_PATTERN = re.compile(
 )
 SALARY_CONTEXT_PATTERN = re.compile(r"\b(?:salary|base[\s-]+pay|pay[\s-]+range|compensation[\s-]+range)\b", re.I)
 NON_SALARY_PATTERN = re.compile(r"\b(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
+NON_SALARY_SUFFIX_PATTERN = re.compile(r"^\s*(?:signing\s+)?(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
 SALARY_SUFFIX_PATTERN = re.compile(r"\s*(?:per year|annually)?\s*(?:annual\s+)?(?:base\s+salary|salary\s+range|base[\s-]+pay|pay[\s-]+range)\b", re.I)
 FOREIGN_DOLLAR_PREFIX_PATTERN = re.compile(r"\b(?:CA|AU|NZ)\s*\$", re.I)
-FOREIGN_CODE_BEFORE_PATTERN = re.compile(r"\b(?!USD\b)[A-Z]{3}\s*(?::\s*)?$")
-FOREIGN_CODE_AFTER_PATTERN = re.compile(r"^\s*[([]?\s*(?!USD\b)[A-Z]{3}\b")
-FOREIGN_CODE_LABEL_PATTERN = re.compile(r"\b(?i:currency|in)\s*:?\s*(?!USD\b)[A-Z]{3}\b")
+CURRENCY_CODE_BEFORE_PATTERN = re.compile(r"\b([A-Za-z]{3})\s*(?::\s*)?$")
+CURRENCY_CODE_AFTER_PATTERN = re.compile(r"^\s*[([]?\s*([A-Za-z]{3})\b")
+CURRENCY_CODE_LABEL_PATTERN = re.compile(r"\b(?:currency|in)\s*:?\s*([A-Za-z]{3})\b", re.I)
+CURRENCY_CODES = frozenset("""
+AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL
+""".split())
 NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
 COMPANY_SUFFIXES = {"co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"}
 
@@ -39,7 +43,7 @@ def stated_salaries(description):
     matches = []
     for context in SALARY_CONTEXT_PATTERN.finditer(description):
         tail = description[context.end():]
-        boundary = re.search(r"(?<!\d)[\n.!?](?!\d)", tail)
+        boundary = re.search(r"\n\s*\n|(?<!\d)[.!?](?!\d)", tail)
         segment = tail[:boundary.start()] if boundary else tail
         amount = USD_RANGE_PATTERN.search(segment[:120])
         if amount and not NON_SALARY_PATTERN.search(segment[:amount.start()]) and annual_usd_amount(
@@ -63,13 +67,21 @@ def annual_usd_amount(description, start, end):
     context = description[max(0, start - 40):end + 40]
     before = description[max(0, start - 40):start]
     after = description[end:end + 40]
-    return not any(pattern.search(value) for pattern, value in (
-        (FOREIGN_DOLLAR_PREFIX_PATTERN, context),
-        (FOREIGN_CODE_BEFORE_PATTERN, before),
-        (FOREIGN_CODE_AFTER_PATTERN, after),
-        (FOREIGN_CODE_LABEL_PATTERN, before),
-        (NON_ANNUAL_PERIOD_PATTERN, context),
-    ))
+    currency_matches = (
+        CURRENCY_CODE_BEFORE_PATTERN.search(before),
+        CURRENCY_CODE_AFTER_PATTERN.search(after),
+        CURRENCY_CODE_LABEL_PATTERN.search(before),
+    )
+    has_foreign_code = any(
+        match and match.group(1).upper() in CURRENCY_CODES and match.group(1).upper() != "USD"
+        for match in currency_matches
+    )
+    return not (
+        FOREIGN_DOLLAR_PREFIX_PATTERN.search(context)
+        or has_foreign_code
+        or NON_ANNUAL_PERIOD_PATTERN.search(context)
+        or NON_SALARY_SUFFIX_PATTERN.search(after)
+    )
 
 
 def normalize_company(value):
@@ -198,9 +210,10 @@ def score_posting(posting, profile=None, preferences=None):
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"
 
 
-def prepare_packet(posting, profile=None):
+def prepare_packet(posting, profile=None, facts=None):
     profile = profile or load_profile()
-    facts = [f for f in load_facts(profile) if f.get("verified") is True]
+    facts = facts if facts is not None else load_facts(profile)
+    facts = [f for f in facts if f.get("verified") is True]
     if not facts:
         raise ValueError("Upload a resume and verify at least one career fact in onboarding before generating applications")
     valid = {str(f["id"]): f for f in facts if f.get("id")}

@@ -106,6 +106,12 @@ def _save_facts(facts):
     write_private(storage_dir() / "facts.json", json.dumps(facts, ensure_ascii=False, indent=2).encode())
 
 
+@contextmanager
+def locked_facts(profile):
+    with fact_store_lock():
+        yield _load_facts(profile)
+
+
 def load_facts(profile):
     with fact_store_lock():
         return _load_facts(profile)
