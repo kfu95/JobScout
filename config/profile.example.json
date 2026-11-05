@@ -6,5 +6,6 @@
   "skills": ["Python", "TypeScript", "React", "Swift", "GraphQL", "PostgreSQL", "Redis", "Kafka"],
   "target_titles": ["senior software engineer", "senior backend engineer", "senior full-stack engineer", "senior growth engineer", "senior product engineer"],
   "preferred_locations": ["new york", "nyc", "brooklyn", "manhattan", "remote"],
+  "salary_floor": 150000,
   "verified_experience": []
 }
