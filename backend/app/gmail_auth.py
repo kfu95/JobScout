@@ -9,7 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-REDIRECT_URI = "http://localhost:8000/api/gmail/callback"
+REDIRECT_URI = "http://127.0.0.1:8000/"
 
 class GmailAuthError(Exception):
     pass

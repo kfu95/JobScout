@@ -30,6 +30,18 @@ def pages(method, key, **kwargs):
         if not token:
             break
 
+def matches_filters(messages, message_id, message, query, labels):
+    message_labels = set(message.get("labelIds", []))
+    if message_labels.intersection({"SPAM", "TRASH"}) or not set(labels).issubset(message_labels):
+        return False
+    if not query:
+        return True
+    received_at = int(message["internalDate"]) // 1000
+    scoped_query = f"({query}) after:{received_at - 1} before:{received_at + 1}"
+    matching = pages(messages.list, "messages", userId="me", q=scoped_query,
+                     labelIds=labels or None, includeSpamTrash=False)
+    return any(item["id"] == message_id for item in matching)
+
 def sync_gmail(db):
     query, labels = filters()
     directory().mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -60,13 +72,13 @@ def _sync(db, query, labels):
                 if exc.resp.status != 404:
                     raise
                 candidates = None
-        matching = pages(messages.list, "messages", userId="me", q=query or None,
-                         labelIds=labels or None, includeSpamTrash=False)
-        ids = {item["id"] for item in matching}
-        # A search query can start matching without a Gmail history event.
-        # Check all matching IDs while fetching metadata only for unseen messages.
+        incremental = candidates is not None
+        if not incremental:
+            matching = pages(messages.list, "messages", userId="me", q=query or None,
+                             labelIds=labels or None, includeSpamTrash=False)
+            candidates = {item["id"] for item in matching}
         count = 0
-        for message_id in ids:
+        for message_id in candidates:
             if db.scalar(select(GmailMessage.id).where(GmailMessage.provider_message_id == message_id)):
                 continue
             try:
@@ -76,6 +88,8 @@ def _sync(db, query, labels):
                 if exc.resp.status == 404:
                     continue
                 raise
+            if incremental and not matches_filters(messages, message_id, message, query, labels):
+                continue
             headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
             db.add(GmailMessage(provider_message_id=message_id, thread_id=message["threadId"],
                                 rfc_message_id=headers.get("message-id"), subject=headers.get("subject", ""),
@@ -88,7 +102,7 @@ def _sync(db, query, labels):
         else:
             state.history_id, state.filter_hash = watermark, filter_hash
         db.commit()
-        return {"added": count, "mode": "full" if candidates is None else "incremental"}
+        return {"added": count, "mode": "incremental" if incremental else "full"}
     except Exception:
         db.rollback()
         raise

@@ -10,6 +10,7 @@ from .gmail_auth import GmailAuthError, load_credentials, new_flow, save_credent
 from .gmail_sync import GmailSyncError, sync_gmail
 
 router = APIRouter(prefix="/api/gmail", tags=["gmail"])
+callback_router = APIRouter(tags=["gmail"])
 _pending = {}
 
 @router.post("/connect")
@@ -23,7 +24,7 @@ def connect():
     except GmailAuthError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-@router.get("/callback")
+@callback_router.get("/")
 def callback(state: str, code: str = "", error: str = ""):
     pending = _pending.pop(state, None)
     if not pending or time.monotonic() - pending[1] > 600:

@@ -90,9 +90,9 @@ Cost and access depend on your API account/model. The code uses structured outpu
 
 ## Included / not included
 
-**Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; manual submission status and evidence note; periodic polling; tests.
+**Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
 
-**Not yet integrated:** LinkedIn or Built In **automatic email-alert ingestion**; Gmail OAuth inbox sync; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
+**Not yet integrated:** LinkedIn or Built In email-alert parsing and job extraction; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
 
 ## Security and operations
 
@@ -125,7 +125,7 @@ pytest -q
 
 ## Next implementation phase
 
-See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail OAuth alert ingestion, recruiter tracking, cross-source deduplication, resume templates, and production hardening.
+See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail alert parsing, recruiter tracking, cross-source deduplication, resume templates, and production hardening.
 
 ## Reference documentation
 
@@ -140,4 +140,4 @@ Create a Google Cloud project, enable the Gmail API, configure the OAuth consent
 
 Set `GMAIL_QUERY` and/or `GMAIL_LABELS` in `.env` before starting Compose. Labels are comma-separated Gmail label IDs; a query uses Gmail search syntax. Both filters apply when both are present. For example, `GMAIL_QUERY=from:(jobalerts-noreply@linkedin.com)` limits ingestion to that sender. Configure filters carefully because matching message metadata and a short snippet are stored in the database. Raw message bodies and attachments are not retained.
 
-Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to the local API callback. Check `GET /api/gmail/status` and trigger a sync with `POST /api/gmail/sync`. The worker also polls on `POLL_SECONDS`. Sync uses Gmail history and falls back to a full filtered scan when the cursor expires or filters change. Filtered message IDs are listed on each poll so query and label membership can be checked; only new matching messages are fetched. Reconnect if credentials are revoked or expired. This local API has no authentication and must not be exposed publicly without the protections described above.
+Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to `http://127.0.0.1:8000/`. Check `GET /api/gmail/status` and trigger a sync with `POST /api/gmail/sync`. The worker also polls on `POLL_SECONDS`. Sync processes only history-reported messages while the cursor is valid and falls back to a full filtered scan on first sync, after filter changes, or when the cursor expires. Query candidates are checked with narrowly time-bounded Gmail searches, while labels are checked from message metadata. Reconnect if credentials are revoked or expired. This integration is verified with mocked Gmail responses, not a live Google account. This local API has no authentication and must not be exposed publicly without the protections described above.
