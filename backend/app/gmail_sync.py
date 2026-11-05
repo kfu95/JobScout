@@ -15,6 +15,7 @@ from .gmail_auth import (
     mailbox_needs_binding,
 )
 from .models import GmailMessage, GmailSyncState
+from .gmail_process import process_pending
 
 SPAM_TRASH_QUERY = re.compile(
     r"(?:^|[\s({])(?:in|label):(spam|trash|anywhere)(?=$|[\s)}])", re.IGNORECASE
@@ -153,6 +154,7 @@ def _sync(db, query, labels):
         else:
             state.history_id = watermark
         db.commit()
+        process_pending(db, messages)
         return {"added": count, "mode": "incremental" if incremental else "full"}
     except Exception:
         db.rollback()
