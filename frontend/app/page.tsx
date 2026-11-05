@@ -65,7 +65,7 @@ export default function Dashboard() {
       <section className="panel feed"><div className="sectionTitle"><h2>Job feed</h2><span>{jobs.length} shown</span></div>
         <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
           <label>Min score <select value={minScore} onChange={e=>setMinScore(Number(e.target.value))}><option value="0">All</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option></select></label></div>
-        <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Add a company board below and run collection.</p>}
+        <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Run collection to discover jobs.</p>}
           {jobs.map(j=><button className={`job ${selected?.id===j.id?"chosen":""}`} key={j.id} onClick={()=>selectJob(j.id)}>
             <span className="jobHead"><b>{j.title}</b><span className="score">{j.score}</span></span>
             <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
@@ -75,7 +75,7 @@ export default function Dashboard() {
         <p>{selected.company} · {selected.location}</p>
         <p className="muted">{selected.score_reason || "No score reasoning yet"}</p>
         <div className="row actions">
-          <a className="button outline" href={safeLink(selected.apply_url)} target="_blank" rel="noopener noreferrer">Open company application</a>
+          <a className="button outline" href={safeLink(selected.apply_url)} target="_blank" rel="noopener noreferrer">Open job listing</a>
           <button disabled={busy || !selected.is_open} onClick={()=>action(`/api/jobs/${selected.id}/prepare`)}>Prepare packet</button>
           <button className="outline" disabled={busy} onClick={()=>action(`/api/jobs/${selected.id}/decision`,{decision:"skip"})}>Skip</button>
         </div>
@@ -103,9 +103,9 @@ export default function Dashboard() {
         <form className="stack" onSubmit={addBoard}><input required value={company} placeholder="Company name" onChange={e=>setCompany(e.target.value)}/>
           <div className="row"><select value={provider} onChange={e=>setProvider(e.target.value)}><option>greenhouse</option><option>lever</option><option>ashby</option></select>
           <input required value={slug} placeholder="Board token / slug" onChange={e=>setSlug(e.target.value)}/><button disabled={busy}>Add board</button></div></form>
-        <ul className="boardList">{boards.map(b=><li key={b.id}><b>{b.company}</b> · {b.provider}/{b.slug}<small>{b.last_error ? `Last error: ${b.last_error}` : b.last_success_at ? "Last fetch succeeded" : "Not polled yet"}</small></li>)}</ul>
+        <p className="muted">Showing the first {Math.min(boards.length, 100)} of {boards.length} boards.</p><ul className="boardList">{boards.slice(0,100).map(b=><li key={b.id}><b>{b.company}</b> · {b.provider}/{b.slug}<small>{b.last_error ? `Last error: ${b.last_error}` : b.last_success_at ? "Last fetch succeeded" : "Not polled yet"}</small></li>)}</ul>
       </section>
-      <section className="panel"><h2>LinkedIn / Built In leads</h2><p className="muted">Manual intake for now. Do not scrape protected job boards; Gmail alert ingestion is a follow-on integration.</p>
+      <section className="panel"><h2>LinkedIn / Built In leads</h2><p className="muted">Manual intake only. JobScout does not scrape protected job boards.</p>
         <form className="stack" onSubmit={addLead}><div className="row"><select value={leadSource} onChange={e=>setLeadSource(e.target.value)}><option>LinkedIn</option><option>Built In</option><option>Other</option></select>
           <input placeholder="Company" value={leadCompany} onChange={e=>setLeadCompany(e.target.value)}/></div>
           <input required placeholder="Role title" value={leadTitle} onChange={e=>setLeadTitle(e.target.value)}/>

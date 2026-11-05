@@ -3,6 +3,8 @@ import hashlib
 import html
 import json
 import re
+import logging
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import httpx
 from sqlalchemy import select
 from .models import Board, Job, JobVersion, now
@@ -36,6 +38,7 @@ def normalize(provider, item):
             "location": categories.get("location") or ", ".join(categories.get("allLocations") or []) or "",
             "description": plain(item.get("descriptionPlain") or item.get("description") or item.get("lists") or ""),
             "apply_url": item.get("applyUrl") or item.get("hostedUrl") or "",
+            "salary_max": (item.get("salaryRange") or {}).get("max") if (item.get("salaryRange") or {}).get("interval") == "yearly" else None,
         }
     if provider == "ashby":
         return {
@@ -53,21 +56,29 @@ def content_hash(posting):
     return hashlib.sha256(json.dumps(keys, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def canonical_url(url):
+    parsed = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+             if not (k.lower().startswith("utm_") or k.lower() in {"gh_src", "source", "ref", "referrer"})]
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urlencode(sorted(query)), ""))
+
+
 async def fetch_board(client: httpx.AsyncClient, board: Board):
+    from .discovery import polite_get
     if board.provider not in ALLOWED_PROVIDERS or not SLUG_PATTERN.fullmatch(board.slug):
         raise ValueError("Invalid provider or board slug")
     slug = board.slug
     if board.provider == "greenhouse":
-        resp = await client.get(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", params={"content": "true"})
+        resp = await polite_get(client, f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", params={"content": "true"})
         resp.raise_for_status()
         return [normalize("greenhouse", x) for x in resp.json()["jobs"] if x.get("internal_job_id") is not None]
     if board.provider == "ashby":
-        resp = await client.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}", params={"includeCompensation": "true"})
+        resp = await polite_get(client, f"https://api.ashbyhq.com/posting-api/job-board/{slug}", params={"includeCompensation": "true"})
         resp.raise_for_status()
         return [normalize("ashby", x) for x in resp.json()["jobs"] if x.get("isListed", True)]
     all_items = []
     for offset in range(0, 5000, 100):
-        resp = await client.get(f"https://api.lever.co/v0/postings/{slug}", params={"mode": "json", "skip": offset, "limit": 100})
+        resp = await polite_get(client, f"https://api.lever.co/v0/postings/{slug}", params={"mode": "json", "skip": offset, "limit": 100})
         resp.raise_for_status()
         page = resp.json()
         if not isinstance(page, list):
@@ -78,21 +89,27 @@ async def fetch_board(client: httpx.AsyncClient, board: Board):
     raise ValueError("Lever board exceeds 5,000 postings; refusing partial snapshot")
 
 
-def persist_snapshot(db, board: Board, postings: list[dict]):
+def persist_snapshot(db, board: Board, postings: list[dict], close_missing=True, existing_urls=None):
     """Apply a COMPLETE successful snapshot. Failed fetches must never close jobs."""
     unique_postings = {p["external_id"]: p for p in postings if p.get("title") and p.get("apply_url")}
     old_jobs = {j.external_id: j for j in db.scalars(select(Job).where(Job.board_id == board.id)).all()}
+    if existing_urls is None:
+        existing_urls = {canonical_url(j.apply_url): j.id for j in db.scalars(select(Job)).all()}
     stats = {"new": 0, "updated": 0, "closed": 0, "seen": len(unique_postings)}
     for external_id, p in unique_postings.items():
         digest = content_hash(p)
         job = old_jobs.pop(external_id, None)
         if job is None:
+            url = canonical_url(p["apply_url"])
+            if url in existing_urls:
+                continue
             score, reason, method = score_posting(p)
             job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=p["location"],
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
                       score=score, score_reason=reason, score_method=method)
             db.add(job)
             db.flush()
+            existing_urls[url] = job.id
             db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))
             stats["new"] += 1
         else:
@@ -106,7 +123,7 @@ def persist_snapshot(db, board: Board, postings: list[dict]):
                 db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))
                 stats["updated"] += 1
     for job in old_jobs.values():
-        if job.is_open:
+        if close_missing and job.is_open:
             job.missing_count += 1
             if job.missing_count >= 2:
                 job.is_open = False
@@ -118,13 +135,34 @@ def persist_snapshot(db, board: Board, postings: list[dict]):
 
 
 async def collect_all(db):
-    boards = db.scalars(select(Board).where(Board.enabled.is_(True)).order_by(Board.id)).all()
+    from .aggregators import collect_aggregators, salary_max
+    from .discovery import refresh_directory, mark
+    from .models import DiscoveryState
+    from .preferences import discovery_preferences, matches
+    preferences = discovery_preferences()
     results = []
     async with httpx.AsyncClient(timeout=25, follow_redirects=False, headers={"Accept": "application/json", "User-Agent": "PersonalJobTracker/0.1"}) as client:
+        try:
+            added = await refresh_directory(db, client)
+            results.append({"provider": "directory", "ok": True, "added": added})
+        except Exception as exc:
+            db.rollback()
+            logging.getLogger(__name__).exception("Directory refresh failed")
+            results.append({"provider": "directory", "ok": False, "error": str(exc)[:250]})
+        existing_urls = {canonical_url(j.apply_url): j.id for j in db.scalars(select(Job)).all()}
+        results.extend(await collect_aggregators(db, client, preferences, existing_urls))
+        state = db.get(DiscoveryState, "board_cursor")
+        cursor = int(state.value) if state and state.value else 0
+        query = select(Board).where(Board.enabled.is_(True), Board.provider.in_(ALLOWED_PROVIDERS))
+        boards = db.scalars(query.where(Board.id > cursor).order_by(Board.id).limit(300)).all()
+        if not boards and cursor:
+            boards = db.scalars(query.order_by(Board.id).limit(300)).all()
         for board in boards:
             try:
                 postings = await fetch_board(client, board)
-                stats = persist_snapshot(db, board, postings)
+                for posting in postings:
+                    posting["salary_max"] = posting.get("salary_max") or salary_max(posting.get("description"))
+                stats = persist_snapshot(db, board, [p for p in postings if matches(p, preferences)], existing_urls=existing_urls)
                 results.append({"company": board.company, "provider": board.provider, "ok": True, **stats})
             except Exception as e:
                 db.rollback()
@@ -132,4 +170,5 @@ async def collect_all(db):
                 db.add(board)
                 db.commit()
                 results.append({"company": board.company, "provider": board.provider, "ok": False, "error": str(e)[:250]})
+            mark(db, "board_cursor", str(board.id))
     return results

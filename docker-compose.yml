@@ -18,6 +18,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
+      USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}
@@ -41,6 +43,8 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
+      USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}

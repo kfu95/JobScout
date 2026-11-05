@@ -24,7 +24,7 @@ In the UI, enter the company, ATS provider, and the company's board token from i
 - Lever: `https://jobs.lever.co/BOARD_TOKEN`
 - Ashby: `https://jobs.ashbyhq.com/BOARD_TOKEN`
 
-Then click **Run collectors now**. The separate worker will poll configured boards every two hours by default. Public API read requests are authenticated by neither the user nor the employer; some boards may block access or have special formats.
+The separate worker discovers and polls boards automatically. You can also click **Run collectors now**; the default cycle interval is two hours. Public API read requests are authenticated by neither the user nor the employer; some boards may block access or have special formats.
 
 You can also add boards by API:
 
@@ -92,7 +92,7 @@ Cost and access depend on your API account/model. The code uses structured outpu
 
 **Included:** Public Greenhouse / Lever / Ashby collectors; bounded Lever pagination; title/location/description normalization; idempotency within each board; job-description versioning; two-successful-snapshot closure rule; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
 
-**Not yet integrated:** LinkedIn or Built In email-alert parsing and job extraction; automatic company-wide source discovery; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
+**Not yet integrated:** LinkedIn or Built In email-alert parsing and job extraction; cross-board semantic deduplication; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
 
 ## Security and operations
 
@@ -100,7 +100,7 @@ Cost and access depend on your API account/model. The code uses structured outpu
 - Keep `.env` and `config/profile.json` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
 - Postgres persists in the `pgdata` Docker volume. `docker compose down` keeps the volume; `docker compose down -v` destroys it.
 - Read-only ATS polling uses exact allowlisted HTTPS hosts and validated board slugs. No arbitrary URL fetch or application POST is performed.
-- Jobs from different ATS boards are **not yet merged** automatically. Within-board duplicate ingestion is prevented with a uniqueness constraint.
+- Jobs with matching normalized listing URLs are deduplicated across sources. Different URLs for the same job may still appear separately.
 - The current schema is created automatically on startup (`create_all`) and is a starter only: add Alembic migrations before changing schema in production.
 - OpenAI key changes require container recreation: `docker compose up -d --force-recreate api worker`.
 
@@ -141,3 +141,13 @@ Create a Google Cloud project, enable the Gmail API, configure the OAuth consent
 Set `GMAIL_QUERY` and/or `GMAIL_LABELS` in `.env` before starting Compose. If the services are already running, apply these values with `docker compose up -d --force-recreate api worker`. Labels are comma-separated Gmail label IDs; a query uses Gmail search syntax. Both filters apply when both are present. For example, `GMAIL_QUERY=from:(jobalerts-noreply@linkedin.com)` limits ingestion to that sender. Filters targeting Spam, Trash, or `in:anywhere` are rejected, and a label-only preflight excludes Spam and Trash before fetching message metadata or snippets. Time-relative operators such as `after:`, `before:`, `older:`, `newer:`, `older_than:`, and `newer_than:` are unsupported because incremental sync only processes new mailbox events. Configure filters carefully because matching message metadata and a short snippet are stored in the database. Raw message bodies and attachments are not retained.
 
 Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to `http://127.0.0.1:8000/`. The credential directory is bound to the first authorized mailbox; reconnecting the same mailbox is supported, while authorizing a different mailbox is rejected to protect existing messages and sync state. Check `GET /api/gmail/status` and trigger a sync manually with `POST /api/gmail/sync`. The worker runs Gmail sync daily at approximately 06:00 America/New_York and follows daylight saving time; `POLL_SECONDS` continues to control only ATS collection. Gmail performs a full filtered scan on first sync or when the history cursor expires. Otherwise it processes only new messages reported by Gmail history, including after filter changes, so changing filters does not backfill older mail. Query candidates are checked with narrowly time-bounded Gmail searches, while labels are checked from message metadata. Reconnect the same mailbox if credentials are revoked or expired. This integration is verified with mocked Gmail responses, not a live Google account. This local API has no authentication and must not be exposed publicly without the protections described above.
+
+### Automatic discovery
+
+Collection refreshes a directory of public Greenhouse, Lever, and Ashby boards weekly and polls up to 300 boards per cycle in rotation. Manual boards still work. The directory comes from [LastRound AI's ATS Company Directory](https://github.com/fyrosofttech/lastroundai-hiring-data/tree/main/ats-directory), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see its [pay transparency study](https://lastroundai.com/blog/salary-transparency-study-2026). Tokens may become stale and this dataset is not a complete list. Requests use a roughly one-second interval with jitter and honor Retry-After. Failed boards do not close their postings.
+
+[Remotive's public API](https://github.com/remotive-com/remote-jobs-api) supplies remote software jobs, extending New York searches to eligible remote roles without a key. Listings link to Remotive and show its name as the provider. Its public feed is delayed 24 hours and is fetched at most once per six hours, including after failures. Its terms prohibit submitting these jobs to other job sites. [USAJOBS](https://developer.usajobs.gov/api-reference/get-api-search) supplies federal software roles. Request a free key at the [API request page](https://developer.usajobs.gov/apirequest/index), then set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`; the email must be the one used for the key. If either is missing, USAJOBS is skipped with a logged notice. No personal email is built in.
+
+`config/profile.json` supplies `target_titles`, `preferred_locations`, and optional annual `salary_floor` (USD). Jobs with missing location or salary remain eligible for review; salary filtering applies only where an annual maximum is recognizable. Results are deduplicated by source ID and normalized listing URL, although aggregator links may differ from an employer's direct URL. Aggregator listings are not automatically marked closed yet; verify availability on the linked listing. Directory rotation can take multiple days. Discovery does not use Gmail alerts.
+
+Deferred: concurrent collection coordination across API and worker, more complete salary and remote eligibility parsing, improved cross-provider identity matching, and closing aggregator listings absent from complete feeds.
