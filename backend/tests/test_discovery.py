@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, store_aggregator
-from app.collectors import collect_all, persist_snapshot
+from app.collectors import collect_all, normalize, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
 from app.models import Board, Job
@@ -25,20 +25,73 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
     def handler(request):
         requests.append(request)
         if request.url.host == "remotive.com":
-            return httpx.Response(200, json={"jobs": [{"id": 4, "company_name": "A", "title": "Senior Software Engineer", "candidate_required_location": "USA", "url": "https://remotive.com/job/4", "salary": "$40,000 - $50,000"}]})
-        return httpx.Response(200, json={"SearchResult": {"SearchResultCountAll": 1, "SearchResultItems": [{"MatchedObjectId": "2", "MatchedObjectDescriptor": {"PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency", "PositionURI": "https://usajobs.gov/job/2", "PositionLocation": [{"LocationName": "New York"}], "PositionRemuneration": [{"RateIntervalCode": "Per Year", "MaximumRange": "180000"}]}}]}})
+            return httpx.Response(200, json={"jobs": [{"id": 4, "company_name": "A", "title": "Senior Software Engineer", "candidate_required_location": "USA", "url": "https://remotive.com/job/4", "salary": "40k - 50k USD"}]})
+        return httpx.Response(200, json={"SearchResult": {"SearchResultCountAll": 1, "SearchResultItems": [{"MatchedObjectId": "2", "MatchedObjectDescriptor": {"PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency", "PositionURI": "https://usajobs.gov/job/2", "PositionLocation": [{"LocationName": "New York"}], "PositionRemuneration": [{"MinimumRange": "92108", "MaximumRange": "119746", "RateIntervalCode": "PA", "Description": "Per Year"}]}}]}})
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await fetch_remotive(client), await fetch_usajobs(client, "secret", "person@example.com")
     remotive, usa = run(exercise())
     assert remotive[0]["salary_max"] == 50000
+    assert usa[0]["salary_max"] == 119746
     assert not matches(remotive[0], PREFS)
-    assert matches(usa[0], PREFS)
+    assert not matches(usa[0], PREFS)
     assert requests[1].headers["authorization-key"] == "secret"
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
-    assert not matches({**usa[0], "salary_max": 100000}, PREFS)
-    assert matches({**usa[0], "title": "Staff Software Engineer"}, PREFS)
+    assert matches({**usa[0], "title": "Staff Software Engineer", "salary_max": 180000}, PREFS)
+
+
+def test_ats_provider_contract_normalization():
+    lever = normalize("lever", {
+        "id": "lever-1", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-1",
+        "categories": {"location": "San Francisco", "allLocations": ["San Francisco", "New York"]},
+        "workplaceType": "hybrid",
+        "salaryRange": {"currency": "USD", "interval": "per-year-salary", "min": 100000, "max": 120000},
+    })
+    assert lever["location"] == "San Francisco, New York"
+    assert lever["salary_max"] == 120000
+    assert matches({**lever, "salary_max": 180000}, PREFS)
+    assert not matches(lever, PREFS)
+
+    lever_remote = normalize("lever", {
+        "id": "lever-2", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-2",
+        "categories": {"location": "United States", "allLocations": ["United States"]},
+        "workplaceType": "remote",
+    })
+    assert lever_remote["location"] == "United States, Remote"
+    assert matches(lever_remote, PREFS)
+
+    ashby_hybrid = normalize("ashby", {
+        "jobUrl": "https://example.com/ashby-1", "title": "Staff Software Engineer", "location": "Boston",
+        "isRemote": True, "workplaceType": "Hybrid", "descriptionPlain": "",
+    })
+    assert ashby_hybrid["location"] == "Boston"
+    assert not matches(ashby_hybrid, PREFS)
+
+    ashby_remote = normalize("ashby", {
+        "jobUrl": "https://example.com/ashby-remote", "title": "Staff Software Engineer", "location": "Boston",
+        "isRemote": True, "workplaceType": "Remote", "descriptionPlain": "",
+    })
+    assert ashby_remote["location"] == "Boston, Remote"
+    assert matches(ashby_remote, PREFS)
+
+    ashby = normalize("ashby", {
+        "jobUrl": "https://example.com/ashby-2", "title": "Staff Software Engineer", "location": "San Francisco",
+        "secondaryLocations": [{"location": "New York"}], "workplaceType": "OnSite", "descriptionPlain": "",
+        "compensation": {"summaryComponents": [{
+            "compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD",
+            "minValue": 81000, "maxValue": 87000,
+        }]},
+    })
+    assert ashby["location"] == "San Francisco, New York"
+    assert ashby["salary_max"] == 87000
+    assert matches({**ashby, "salary_max": 180000}, PREFS)
+    assert not matches(ashby, PREFS)
+
+    assert normalize("lever", {
+        "id": "lever-3", "text": "Engineer", "applyUrl": "https://example.com/lever-3",
+        "categories": {}, "salaryRange": {"currency": "EUR", "interval": "per-year-salary", "max": 180000},
+    })["salary_max"] is None
 
 
 def test_directory_and_cross_source_dedup(monkeypatch):

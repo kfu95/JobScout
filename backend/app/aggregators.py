@@ -14,10 +14,11 @@ log = logging.getLogger(__name__)
 
 def remotive_salary_max(text):
     text = str(text or "")
-    if re.search(r"(?i)(hour|/hr|day|week|month)", text):
+    if re.search(r"(?i)\b(?:hourly?|hrs?|daily|days?|weekly|weeks?|monthly|months?)\b|/(?:hr|day|week|month)\b", text):
         return None
-    values = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)\s*([kK]?)", text)
+    values = re.findall(r"(?i)(?<![\w.])(?:USD\s*)?\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k?)", text)
     amounts = [float(n.replace(",", "")) * (1000 if suffix else 1) for n, suffix in values]
+    amounts = [amount for amount in amounts if amount >= 1000]
     return max(amounts) if amounts else None
 
 
@@ -31,7 +32,8 @@ def remotive_posting(item):
 def usajobs_posting(item):
     data = item["MatchedObjectDescriptor"]
     pay = data.get("PositionRemuneration") or []
-    annual = [float(p["MaximumRange"]) for p in pay if p.get("RateIntervalCode", "").lower() in ("per year", "year") and p.get("MaximumRange")]
+    annual = [float(p["MaximumRange"]) for p in pay if str(p.get("RateIntervalCode") or "").upper() == "PA"
+              and p.get("MaximumRange") and float(p["MaximumRange"]) > 0]
     locations = [x.get("LocationName", "") for x in data.get("PositionLocation", [])]
     if data.get("UserArea", {}).get("Details", {}).get("RemoteIndicator"):
         locations.append("Remote")

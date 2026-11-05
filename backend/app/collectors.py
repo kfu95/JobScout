@@ -23,6 +23,25 @@ def plain(value):
     return re.sub(r"[ \t]+", " ", value).strip()
 
 
+def normalized_location(locations, workplace_type=""):
+    values = []
+    seen = set()
+    for location in locations:
+        value = str(location or "").strip()
+        key = value.casefold()
+        if value and key not in seen:
+            values.append(value)
+            seen.add(key)
+    if str(workplace_type or "").casefold() == "remote" and "remote" not in seen:
+        values.append("Remote")
+    return ", ".join(values)
+
+
+def positive_max(values):
+    amounts = [float(value) for value in values if value is not None and float(value) > 0]
+    return max(amounts) if amounts else None
+
+
 def normalize(provider, item):
     if provider == "greenhouse":
         return {
@@ -34,21 +53,40 @@ def normalize(provider, item):
         }
     if provider == "lever":
         categories = item.get("categories") or {}
+        salary = item.get("salaryRange") or {}
+        salary_max = None
+        if str(salary.get("currency") or "").upper() == "USD" and salary.get("interval") == "per-year-salary":
+            salary_max = positive_max([salary.get("max")])
         return {
             "external_id": str(item["id"]),
             "title": item.get("text", ""),
-            "location": categories.get("location") or ", ".join(categories.get("allLocations") or []) or "",
+            "location": normalized_location(
+                categories.get("allLocations") or [categories.get("location")],
+                item.get("workplaceType"),
+            ),
             "description": plain(item.get("descriptionPlain") or item.get("description") or item.get("lists") or ""),
             "apply_url": item.get("applyUrl") or item.get("hostedUrl") or "",
-            "salary_max": (item.get("salaryRange") or {}).get("max") if (item.get("salaryRange") or {}).get("interval") == "yearly" else None,
+            "salary_max": salary_max,
         }
     if provider == "ashby":
+        components = ((item.get("compensation") or {}).get("summaryComponents") or [])
+        annual_usd_salary = [
+            component.get("maxValue")
+            for component in components
+            if str(component.get("compensationType") or "").casefold() == "salary"
+            and str(component.get("interval") or "").upper() == "1 YEAR"
+            and str(component.get("currencyCode") or "").upper() == "USD"
+        ]
         return {
             "external_id": str(item.get("id") or item.get("jobUrl") or item["applyUrl"]),
             "title": item.get("title", ""),
-            "location": item.get("location", "") + (" / Remote" if item.get("isRemote") else ""),
+            "location": normalized_location(
+                [item.get("location"), *[location.get("location") for location in item.get("secondaryLocations") or []]],
+                item.get("workplaceType"),
+            ),
             "description": plain(item.get("descriptionPlain") or item.get("descriptionHtml") or ""),
             "apply_url": item.get("applyUrl") or item.get("jobUrl") or "",
+            "salary_max": positive_max(annual_usd_salary),
         }
     raise ValueError(f"Unsupported provider: {provider}")
 
