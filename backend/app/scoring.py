@@ -11,6 +11,15 @@ DEFAULT_PROFILE = {
     "preferred_locations": ["new york", "nyc", "remote"], "verified_experience": []
 }
 
+USD_RANGE_PATTERN = re.compile(
+    r"(?:\$\s*|USD\s+)(\d[\d,]*(?:\.\d+)?)\s*(k)?"
+    r"(?:\s*(?:-|–|—|to)\s*(?:\$\s*|USD\s+)?(\d[\d,]*(?:\.\d+)?)\s*(k)?)?",
+    re.I,
+)
+SALARY_CONTEXT_PATTERN = re.compile(r"\b(?:salary|base[\s-]+pay|pay[\s-]+range|compensation[\s-]+range)\b", re.I)
+NON_SALARY_PATTERN = re.compile(r"\b(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
+SALARY_SUFFIX_PATTERN = re.compile(r"\s*(?:per year|annually)?\s*(?:annual\s+)?(?:base\s+salary|salary\s+range|base[\s-]+pay|pay[\s-]+range)\b", re.I)
+
 
 def load_profile():
     path = Path(os.getenv("PROFILE_PATH", "../config/profile.json"))
@@ -18,6 +27,26 @@ def load_profile():
         return DEFAULT_PROFILE
     with path.open() as f:
         return json.load(f)
+
+
+def stated_salaries(description):
+    matches = []
+    for context in SALARY_CONTEXT_PATTERN.finditer(description):
+        tail = description[context.end():]
+        boundary = re.search(r"(?<!\d)[\n.!?](?!\d)", tail)
+        segment = tail[:boundary.start()] if boundary else tail
+        amount = USD_RANGE_PATTERN.search(segment[:120])
+        if amount and not NON_SALARY_PATTERN.search(segment[:amount.start()]):
+            matches.append(amount)
+    for amount in USD_RANGE_PATTERN.finditer(description):
+        if SALARY_SUFFIX_PATTERN.match(description[amount.end():amount.end() + 60]):
+            matches.append(amount)
+    return [
+        float(number.replace(",", "")) * (1000 if suffix else 1)
+        for match in matches
+        for number, suffix in ((match.group(1), match.group(2)), (match.group(3), match.group(4)))
+        if number
+    ]
 
 
 def preference_filter(posting, preferences):
@@ -28,27 +57,15 @@ def preference_filter(posting, preferences):
             return False, "Excluded by preferences"
     floor = preferences.get("salary_floor")
     description = str(posting.get("description", ""))
-    pattern = re.compile(
-        r"(?:\$\s*|USD\s+)(\d[\d,]*(?:\.\d+)?)\s*(k)?"
-        r"(?:\s*(?:-|–|—|to)\s*(?:\$\s*|USD\s+)?(\d[\d,]*(?:\.\d+)?)\s*(k)?)?",
-        re.I,
-    )
-    amounts = [
-        float(number.replace(",", "")) * (1000 if suffix else 1)
-        for match in pattern.finditer(description)
-        for number, suffix in ((match.group(1), match.group(2)), (match.group(3), match.group(4)))
-        if number
-    ]
-    salaries = amounts
-    salaries = [n for n in salaries if n >= 10000]
+    salaries = [amount for amount in stated_salaries(description) if amount >= 10000]
     if floor and salaries and max(salaries) < floor:
         return False, "Below salary floor"
     return True, "Salary unknown" if not salaries else "Salary stated"
 
 
-def matches_title(title, terms):
+def matches_phrase(value, terms):
     return any(
-        re.search(rf"(?<!\w){re.escape(term.strip().lower())}(?!\w)", title)
+        re.search(rf"(?<!\w){re.escape(term.strip().lower())}(?!\w)", value)
         for term in terms
         if term.strip()
     )
@@ -61,11 +78,11 @@ def baseline_score(posting, profile=None, preferences=None):
     if not allowed:
         return 0, salary_note, "heuristic"
     title = posting["title"].lower()
-    location = posting["location"].lower()
+    location = posting.get("location", "").lower()
     description = posting.get("description", "").lower()
-    target_titles = preferences.get("target_titles", [])
+    target_titles = [term.strip() for term in preferences.get("target_titles", []) if term.strip()]
     if target_titles:
-        if not matches_title(title, target_titles):
+        if not matches_phrase(title, target_titles):
             return 0, "Outside target titles", "heuristic"
     else:
         if re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
@@ -75,13 +92,13 @@ def baseline_score(posting, profile=None, preferences=None):
             return 0, "Outside software engineering", "heuristic"
     score = 40
     reasons = [salary_note]
-    if matches_title(title, preferences.get("target_titles", []) + preferences.get("role_families", [])):
+    if target_titles:
         score += 25
         reasons.append("Target title")
-    elif any(level.strip().lower() in title for level in preferences.get("seniority", []) if level.strip()) or "senior" in title or "staff" in title:
+    if matches_phrase(title, preferences.get("seniority", [])):
         score += 15
         reasons.append("Relevant seniority")
-    if any(loc.strip().lower() in location for loc in preferences.get("locations", []) + preferences.get("work_modes", []) if loc.strip()):
+    if matches_phrase(location, preferences.get("locations", [])) or matches_phrase(location, preferences.get("work_modes", [])):
         score += 15
         reasons.append("Preferred location")
     elif not location:

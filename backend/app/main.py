@@ -11,7 +11,7 @@ from .db import get_db, init_db
 from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead, now
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
 from .scoring import prepare_packet, load_profile, score_posting
-from .onboarding import Fact, Preferences, load_facts, save_facts, load_preferences, save_preferences, upload_resume
+from .onboarding import Fact, Preferences, load_facts, save_facts, load_preferences, save_preferences, upload_resume, preference_score_lock
 from .pdf import packet_pdf
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 
@@ -65,6 +65,10 @@ def serialize_job(job, board, application=None, include_description=False):
 def record_event(db, app_row, event_type, details=""):
     db.add(ApplicationEvent(application_id=app_row.id, event_type=event_type, details=details[:1500]))
 
+
+def application_for_update(db, job_id):
+    return db.scalar(select(Application).where(Application.job_id == job_id).with_for_update())
+
 @app.get("/api/onboarding")
 def onboarding():
     profile = load_profile()
@@ -89,30 +93,32 @@ def update_fact(fact_id: str, fact: Fact, db: Session = Depends(get_db)):
         if existing["id"] == fact_id:
             updated = fact.model_dump()
             changed = existing != updated
+            if not changed:
+                return existing
+            applications = db.scalars(select(Application).order_by(Application.id).with_for_update()).all()
             facts[index] = updated
             save_facts(facts)
-            if changed:
-                approved = db.scalars(select(Application).where(Application.status == "approved")).all()
-                for application in approved:
-                    selected = application.packet.get("selected_facts", []) if application.packet else []
-                    if any(selected_fact.get("id") == fact_id for selected_fact in selected):
-                        application.status = "prepared"
-                        application.packet = {}
-                        application.approved_at = None
-                        record_event(db, application, "materials_invalidated", f"Fact {fact_id} changed")
-                db.commit()
+            for application in applications:
+                selected = application.packet.get("selected_facts", []) if application.packet else []
+                if application.status == "approved" and any(selected_fact.get("id") == fact_id for selected_fact in selected):
+                    application.status = "prepared"
+                    application.packet = {}
+                    application.approved_at = None
+                    record_event(db, application, "materials_invalidated", f"Fact {fact_id} changed")
+            db.commit()
             return facts[index]
     raise HTTPException(404, "Fact not found")
 
 @app.put("/api/onboarding/preferences")
 def update_preferences(preferences: Preferences, db: Session = Depends(get_db)):
-    profile = load_profile()
-    preference_data = preferences.model_dump()
-    for job, board in db.execute(select(Job, Board).join(Board, Job.board_id == Board.id)):
-        posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
-        job.score, job.score_reason, job.score_method = score_posting(posting, profile, preference_data)
-    save_preferences(preferences)
-    db.commit()
+    with preference_score_lock():
+        profile = load_profile()
+        preference_data = preferences.model_dump()
+        for job, board in db.execute(select(Job, Board).join(Board, Job.board_id == Board.id)):
+            posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
+            job.score, job.score_reason, job.score_method = score_posting(posting, profile, preference_data)
+        save_preferences(preferences)
+        db.commit()
     return preferences
 
 @app.get("/api/health")
@@ -173,7 +179,7 @@ def prepare(job_id: int, db: Session = Depends(get_db)):
     job = job_or_404(db, job_id)
     if not job.is_open:
         raise HTTPException(409, "Job is no longer listed")
-    existing = db.scalar(select(Application).where(Application.job_id == job.id))
+    existing = application_for_update(db, job.id)
     if existing and existing.status not in ("prepared", "skipped"):
         raise HTTPException(409, "Application has advanced beyond preparation")
     try:
@@ -195,7 +201,7 @@ def decide(job_id: int, payload: DecisionIn, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
     if payload.decision not in ("approve", "skip"):
         raise HTTPException(400, "Decision must be approve or skip")
-    row = db.scalar(select(Application).where(Application.job_id == job_id))
+    row = application_for_update(db, job_id)
     if not row:
         if payload.decision == "approve":
             raise HTTPException(409, "Prepare an application packet first")
@@ -217,7 +223,7 @@ def decide(job_id: int, payload: DecisionIn, db: Session = Depends(get_db)):
 @app.post("/api/jobs/{job_id}/reported")
 def reported(job_id: int, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
-    row = db.scalar(select(Application).where(Application.job_id == job_id))
+    row = application_for_update(db, job_id)
     if not row or row.status != "approved" or not row.packet or not packet_is_current(row.packet):
         raise HTTPException(409, "Approve current materials before reporting submission")
     row.status, row.reported_at = "submission_reported", now()
@@ -228,7 +234,7 @@ def reported(job_id: int, db: Session = Depends(get_db)):
 @app.post("/api/jobs/{job_id}/status")
 def update_status(job_id: int, payload: StatusIn, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
-    row = db.scalar(select(Application).where(Application.job_id == job_id))
+    row = application_for_update(db, job_id)
     if not row or row.status not in ("submission_reported", "confirmed", "interview", "rejected"):
         raise HTTPException(409, "Report a submission first")
     if payload.status not in ("confirmed", "interview", "rejected", "withdrawn"):
@@ -247,7 +253,7 @@ def packet_is_current(packet):
 @app.get("/api/jobs/{job_id}/resume.pdf")
 def resume_pdf(job_id: int, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
-    row = db.scalar(select(Application).where(Application.job_id == job_id))
+    row = application_for_update(db, job_id)
     if not row or not row.packet:
         raise HTTPException(404, "Prepare packet first")
     if not packet_is_current(row.packet):

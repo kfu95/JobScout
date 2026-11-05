@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import select
 
 from .models import JOB_LOCATION_MAX_LENGTH, Board, Job, JobVersion, now
-from .onboarding import load_preferences
+from .onboarding import load_preferences, preference_score_lock
 from .scoring import load_profile, score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
@@ -89,7 +89,7 @@ def normalize(provider, item):
         compensation = item.get("compensation") or {}
         salary = plain(compensation.get("scrapeableCompensationSalarySummary", "")) if isinstance(compensation, dict) else ""
         if salary:
-            description = f"{description}\nCompensation: {salary}".strip()
+            description = f"{description}\nAnnual salary: {salary}".strip()
         return {
             "external_id": str(item.get("id") or item.get("jobUrl") or item["applyUrl"]),
             "title": item.get("title", ""),
@@ -149,6 +149,7 @@ async def fetch_board(client: httpx.AsyncClient, board: Board):
     raise ValueError("Lever board exceeds 5,000 postings; refusing partial snapshot")
 
 
+@preference_score_lock()
 def persist_snapshot(
     db,
     board: Board,
@@ -157,11 +158,10 @@ def persist_snapshot(
     existing_urls=None,
     observed_external_ids=None,
     profile=None,
-    preferences=None,
 ):
     """Apply a COMPLETE successful snapshot. Failed fetches must never close jobs."""
     profile = profile if profile is not None else load_profile()
-    preferences = preferences if preferences is not None else load_preferences(profile)
+    preferences = load_preferences(profile)
     unique_postings = {p["external_id"]: p for p in postings if p.get("title") and p.get("apply_url")}
     if observed_external_ids is None:
         observed_external_ids = set(unique_postings)
@@ -236,7 +236,6 @@ async def collect_all(db):
     from .preferences import discovery_preferences, matches
     preferences = discovery_preferences()
     profile = load_profile()
-    scoring_preferences = load_preferences(profile)
     results = []
     async with httpx.AsyncClient(timeout=25, follow_redirects=False, headers={"Accept": "application/json", "User-Agent": "PersonalJobTracker/0.1"}) as client:
         try:
@@ -266,7 +265,6 @@ async def collect_all(db):
                     existing_urls=existing_urls,
                     observed_external_ids=observed_ids,
                     profile=profile,
-                    preferences=scoring_preferences,
                 )
                 results.append({"company": board.company, "provider": board.provider, "ok": True, **stats})
             except Exception as e:

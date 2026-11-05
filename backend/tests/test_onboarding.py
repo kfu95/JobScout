@@ -52,10 +52,19 @@ def test_preference_exclusions_and_salary():
     assert not preference_filter({"company": "Bad Co"}, prefs)[0]
     assert not preference_filter({"description": "Blockchain"}, prefs)[0]
     assert not preference_filter({"description": "Salary $100,000 - $140,000"}, prefs)[0]
+    assert not preference_filter({"description": "Base salary $140,000 plus equity grant $200,000"}, prefs)[0]
     assert preference_filter({"description": "Salary $120k - $180k"}, prefs)[0]
     assert preference_filter({"description": "No compensation listed"}, prefs) == (True, "Salary unknown")
+    assert preference_filter({"description": "Benefits include a $10,000 annual learning stipend"}, prefs) == (True, "Salary unknown")
+    assert preference_filter({"description": "Signing bonus $50,000 and equity grant $100,000"}, prefs) == (True, "Salary unknown")
     with pytest.raises(ValidationError):
         Preferences(currency="EUR")
+
+
+def test_preference_terms_are_normalized():
+    preferences = Preferences(target_titles=["  ", " software engineer "], locations=["", " New York "])
+    assert preferences.target_titles == ["software engineer"]
+    assert preferences.locations == ["New York"]
 
 
 def test_private_write_failure_preserves_existing_facts(monkeypatch):

@@ -1,13 +1,15 @@
+import fcntl
 import json
 import os
 import re
 import tempfile
 import uuid
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Fact(BaseModel):
@@ -22,7 +24,6 @@ class Fact(BaseModel):
 
 class Preferences(BaseModel):
     target_titles: list[str] = Field(default_factory=list)
-    role_families: list[str] = Field(default_factory=list)
     seniority: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
     work_modes: list[str] = Field(default_factory=list)
@@ -31,12 +32,29 @@ class Preferences(BaseModel):
     excluded_companies: list[str] = Field(default_factory=list)
     excluded_keywords: list[str] = Field(default_factory=list)
 
+    @field_validator("target_titles", "seniority", "locations", "work_modes", "excluded_companies", "excluded_keywords")
+    @classmethod
+    def clean_terms(cls, terms):
+        return [term.strip() for term in terms if term.strip()]
+
 
 def storage_dir():
     path = Path(os.getenv("ONBOARDING_DIR", "../config/onboarding"))
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
     return path
+
+
+@contextmanager
+def preference_score_lock():
+    path = storage_dir() / ".preferences.lock"
+    with path.open("a") as lock:
+        path.chmod(0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def write_private(path, data):

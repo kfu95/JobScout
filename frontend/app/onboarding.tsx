@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Fact = {id:string; role:string; company:string; dates:string; bullets:string[]; skills:string[]; verified:boolean};
-type Preferences = {target_titles:string[]; role_families:string[]; seniority:string[]; locations:string[]; work_modes:string[]; salary_floor:number|null; currency:"USD"; excluded_companies:string[]; excluded_keywords:string[]};
-const fields: [keyof Preferences, string][] = [["target_titles","Target titles"],["role_families","Role families"],["seniority","Seniority"],["locations","Locations"],["work_modes","Work modes (remote, hybrid, onsite)"],["excluded_companies","Excluded companies"],["excluded_keywords","Excluded keywords"]];
+type Preferences = {target_titles:string[]; seniority:string[]; locations:string[]; work_modes:string[]; salary_floor:number|null; currency:"USD"; excluded_companies:string[]; excluded_keywords:string[]};
+const fields: [keyof Preferences, string][] = [["target_titles","Target titles"],["seniority","Seniority"],["locations","Locations"],["work_modes","Work modes (remote, hybrid, onsite)"],["excluded_companies","Excluded companies"],["excluded_keywords","Excluded keywords"]];
 async function request(path:string, options?:RequestInit) {
   const response = await fetch(BASE + path, options);
   if (!response.ok) { const body = await response.json(); throw new Error(body.detail || response.statusText); }
