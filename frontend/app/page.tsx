@@ -28,14 +28,18 @@ export default function Dashboard() {
   const [company,setCompany] = useState(""); const [provider,setProvider] = useState("greenhouse"); const [slug,setSlug] = useState("");
   const [leadUrl,setLeadUrl] = useState(""); const [leadTitle,setLeadTitle] = useState(""); const [leadCompany,setLeadCompany] = useState(""); const [leadSource,setLeadSource] = useState("LinkedIn");
   const [busy,setBusy] = useState(false); const [notice,setNotice] = useState("");
-  const reload = useCallback(async()=>{
-    const [j,b,l,s] = await Promise.all([
-      api<Job[]>(`/api/jobs?min_score=${minScore}&q=${encodeURIComponent(q)}`),
-      api<Board[]>("/api/boards"), api<Lead[]>("/api/leads"), api<Stats>("/api/stats")
-    ]);
-    setJobs(j);setBoards(b);setLeads(l);setStats(s);
+  const reloadJobs = useCallback(async()=>{
+    setJobs(await api<Job[]>(`/api/jobs?min_score=${minScore}&q=${encodeURIComponent(q)}`));
   },[minScore,q]);
-  useEffect(()=>{reload().catch(e=>setNotice(e.message));},[reload]);
+  const reloadOverview = useCallback(async()=>{
+    const [b,l,s] = await Promise.all([
+      api<Board[]>("/api/boards?limit=100"), api<Lead[]>("/api/leads"), api<Stats>("/api/stats")
+    ]);
+    setBoards(b);setLeads(l);setStats(s);
+  },[]);
+  const reload = useCallback(async()=>{await Promise.all([reloadJobs(),reloadOverview()]);},[reloadJobs,reloadOverview]);
+  useEffect(()=>{reloadJobs().catch(e=>setNotice(e.message));},[reloadJobs]);
+  useEffect(()=>{reloadOverview().catch(e=>setNotice(e.message));},[reloadOverview]);
   async function selectJob(id:number){try{setSelected(await api<Job>(`/api/jobs/${id}`));}catch(e){setNotice(String(e));}}
   async function action(path:string,body?:object) {
     setBusy(true);setNotice("");
@@ -103,7 +107,7 @@ export default function Dashboard() {
         <form className="stack" onSubmit={addBoard}><input required value={company} placeholder="Company name" onChange={e=>setCompany(e.target.value)}/>
           <div className="row"><select value={provider} onChange={e=>setProvider(e.target.value)}><option>greenhouse</option><option>lever</option><option>ashby</option></select>
           <input required value={slug} placeholder="Board token / slug" onChange={e=>setSlug(e.target.value)}/><button disabled={busy}>Add board</button></div></form>
-        <p className="muted">Showing the first {Math.min(boards.length, 100)} of {boards.length} boards.</p><ul className="boardList">{boards.slice(0,100).map(b=><li key={b.id}><b>{b.company}</b> · {b.provider}/{b.slug}<small>{b.last_error ? `Last error: ${b.last_error}` : b.last_success_at ? "Last fetch succeeded" : "Not polled yet"}</small></li>)}</ul>
+        <p className="muted">Showing the first {boards.length} of {stats?.boards ?? boards.length} boards.</p><ul className="boardList">{boards.map(b=><li key={b.id}><b>{b.company}</b> · {b.provider}/{b.slug}<small>{b.last_error ? `Last error: ${b.last_error}` : b.last_success_at ? "Last fetch succeeded" : "Not polled yet"}</small></li>)}</ul>
       </section>
       <section className="panel"><h2>LinkedIn / Built In leads</h2><p className="muted">Manual intake only. JobScout does not scrape protected job boards.</p>
         <form className="stack" onSubmit={addLead}><div className="row"><select value={leadSource} onChange={e=>setLeadSource(e.target.value)}><option>LinkedIn</option><option>Built In</option><option>Other</option></select>

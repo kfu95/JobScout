@@ -2,11 +2,13 @@
 import hashlib
 import html
 import json
-import re
 import logging
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 import httpx
 from sqlalchemy import select
+
 from .models import Board, Job, JobVersion, now
 from .scoring import score_posting
 
@@ -89,9 +91,18 @@ async def fetch_board(client: httpx.AsyncClient, board: Board):
     raise ValueError("Lever board exceeds 5,000 postings; refusing partial snapshot")
 
 
-def persist_snapshot(db, board: Board, postings: list[dict], close_missing=True, existing_urls=None):
+def persist_snapshot(
+    db,
+    board: Board,
+    postings: list[dict],
+    close_missing=True,
+    existing_urls=None,
+    observed_external_ids=None,
+):
     """Apply a COMPLETE successful snapshot. Failed fetches must never close jobs."""
     unique_postings = {p["external_id"]: p for p in postings if p.get("title") and p.get("apply_url")}
+    if observed_external_ids is None:
+        observed_external_ids = set(unique_postings)
     old_jobs = {j.external_id: j for j in db.scalars(select(Job).where(Job.board_id == board.id)).all()}
     if existing_urls is None:
         existing_urls = {canonical_url(j.apply_url): j.id for j in db.scalars(select(Job)).all()}
@@ -99,10 +110,25 @@ def persist_snapshot(db, board: Board, postings: list[dict], close_missing=True,
     for external_id, p in unique_postings.items():
         digest = content_hash(p)
         job = old_jobs.pop(external_id, None)
+        url = canonical_url(p["apply_url"])
+        duplicate_id = existing_urls.get(url)
+        if duplicate_id is not None and (job is None or duplicate_id != job.id):
+            duplicate = db.get(Job, duplicate_id)
+            if duplicate is None:
+                raise ValueError("Canonical URL index references a missing job")
+            duplicate.last_seen = now()
+            duplicate.is_open = True
+            duplicate.missing_count = 0
+            if duplicate.board_id == board.id:
+                old_jobs.pop(duplicate.external_id, None)
+            if job is not None:
+                old_url = canonical_url(job.apply_url)
+                if existing_urls.get(old_url) == job.id:
+                    del existing_urls[old_url]
+                job.is_open = False
+                job.missing_count = 0
+            continue
         if job is None:
-            url = canonical_url(p["apply_url"])
-            if url in existing_urls:
-                continue
             score, reason, method = score_posting(p)
             job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=p["location"],
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
@@ -117,11 +143,17 @@ def persist_snapshot(db, board: Board, postings: list[dict], close_missing=True,
             job.is_open = True
             job.missing_count = 0
             if job.hash != digest:
+                old_url = canonical_url(job.apply_url)
                 job.title, job.location, job.description = p["title"], p["location"], p["description"]
                 job.apply_url, job.hash = p["apply_url"], digest
                 job.score, job.score_reason, job.score_method = score_posting(p)
+                if existing_urls.get(old_url) == job.id:
+                    del existing_urls[old_url]
                 db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))
                 stats["updated"] += 1
+            existing_urls[url] = job.id
+    for external_id in observed_external_ids:
+        old_jobs.pop(external_id, None)
     for job in old_jobs.values():
         if close_missing and job.is_open:
             job.missing_count += 1
@@ -135,7 +167,7 @@ def persist_snapshot(db, board: Board, postings: list[dict], close_missing=True,
 
 
 async def collect_all(db):
-    from .aggregators import collect_aggregators, salary_max
+    from .aggregators import collect_aggregators
     from .discovery import refresh_directory, mark
     from .models import DiscoveryState
     from .preferences import discovery_preferences, matches
@@ -160,9 +192,15 @@ async def collect_all(db):
         for board in boards:
             try:
                 postings = await fetch_board(client, board)
-                for posting in postings:
-                    posting["salary_max"] = posting.get("salary_max") or salary_max(posting.get("description"))
-                stats = persist_snapshot(db, board, [p for p in postings if matches(p, preferences)], existing_urls=existing_urls)
+                eligible = [posting for posting in postings if matches(posting, preferences)]
+                observed_ids = {posting["external_id"] for posting in postings}
+                stats = persist_snapshot(
+                    db,
+                    board,
+                    eligible,
+                    existing_urls=existing_urls,
+                    observed_external_ids=observed_ids,
+                )
                 results.append({"company": board.company, "provider": board.provider, "ok": True, **stats})
             except Exception as e:
                 db.rollback()

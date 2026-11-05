@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.aggregators import collect_aggregators, fetch_remotive, fetch_usajobs, store_aggregator
-from app.collectors import persist_snapshot
+from app.collectors import collect_all, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
 from app.models import Board, Job
@@ -25,17 +25,20 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
     def handler(request):
         requests.append(request)
         if request.url.host == "remotive.com":
-            return httpx.Response(200, json={"jobs": [{"id": 4, "company_name": "A", "title": "Senior Software Engineer", "candidate_required_location": "USA", "url": "https://remotive.com/job/4", "salary": "$160,000 - $200,000 per year"}]})
+            return httpx.Response(200, json={"jobs": [{"id": 4, "company_name": "A", "title": "Senior Software Engineer", "candidate_required_location": "USA", "url": "https://remotive.com/job/4", "salary": "$40,000 - $50,000"}]})
         return httpx.Response(200, json={"SearchResult": {"SearchResultCountAll": 1, "SearchResultItems": [{"MatchedObjectId": "2", "MatchedObjectDescriptor": {"PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency", "PositionURI": "https://usajobs.gov/job/2", "PositionLocation": [{"LocationName": "New York"}], "PositionRemuneration": [{"RateIntervalCode": "Per Year", "MaximumRange": "180000"}]}}]}})
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await fetch_remotive(client), await fetch_usajobs(client, "secret", "person@example.com")
     remotive, usa = run(exercise())
-    assert matches(remotive[0], PREFS) and matches(usa[0], PREFS)
+    assert remotive[0]["salary_max"] == 50000
+    assert not matches(remotive[0], PREFS)
+    assert matches(usa[0], PREFS)
     assert requests[1].headers["authorization-key"] == "secret"
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
     assert not matches({**usa[0], "salary_max": 100000}, PREFS)
+    assert matches({**usa[0], "title": "Staff Software Engineer"}, PREFS)
 
 
 def test_directory_and_cross_source_dedup(monkeypatch):
@@ -55,6 +58,66 @@ def test_directory_and_cross_source_dedup(monkeypatch):
         persist_snapshot(db, board, [posting])
         store_aggregator(db, "usajobs", [{**posting, "external_id": "99", "apply_url": "https://example.com/job/1"}], PREFS)
         assert len(db.scalars(select(Job)).all()) == 1
+        persist_snapshot(db, board, [])
+        store_aggregator(db, "usajobs", [{**posting, "external_id": "99", "apply_url": "https://example.com/job/1"}], PREFS)
+        persist_snapshot(db, board, [])
+        job = db.scalar(select(Job))
+        assert job.is_open and job.missing_count == 1
+        other = Board(company="Other", provider="ashby", slug="other")
+        db.add(other)
+        db.commit()
+        other_posting = {**posting, "external_id": "2", "company": "Other", "apply_url": "https://example.com/job/2"}
+        persist_snapshot(db, other, [other_posting])
+        persist_snapshot(db, other, [{**other_posting, "apply_url": "https://example.com/job/1?ref=duplicate"}])
+        assert len(db.scalars(select(Job).where(Job.is_open.is_(True))).all()) == 1
+
+
+def test_filtered_observation_does_not_close_live_job():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        posting = {"external_id": "1", "company": "Example", "title": "Senior Software Engineer", "location": "New York", "description": "", "apply_url": "https://example.com/job/1"}
+        persist_snapshot(db, board, [posting])
+        moved = {**posting, "location": "Boston"}
+        assert not matches(moved, PREFS)
+        for _ in range(2):
+            persist_snapshot(
+                db,
+                board,
+                [moved] if matches(moved, PREFS) else [],
+                observed_external_ids={moved["external_id"]},
+            )
+        job = db.scalar(select(Job))
+        assert job.is_open and job.missing_count == 0
+
+
+def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        posting = {"external_id": "1", "company": "Example", "title": "Staff Software Engineer", "location": "New York", "description": "$100,000 annual benefit coverage", "apply_url": "https://example.com/job/1"}
+
+        async def no_directory(_db, _client):
+            return 0
+
+        async def no_aggregators(_db, _client, _preferences, _existing_urls):
+            return []
+
+        async def one_posting(_client, _board):
+            return [posting]
+
+        monkeypatch.setattr("app.discovery.refresh_directory", no_directory)
+        monkeypatch.setattr("app.aggregators.collect_aggregators", no_aggregators)
+        monkeypatch.setattr("app.collectors.fetch_board", one_posting)
+        monkeypatch.setattr("app.preferences.discovery_preferences", lambda: PREFS)
+        run(collect_all(db))
+        assert db.scalar(select(Job)) is not None
 
 
 def test_missing_usajobs_credentials_are_logged(monkeypatch, caplog):

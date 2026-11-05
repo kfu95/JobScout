@@ -12,9 +12,9 @@ from .collectors import persist_snapshot, plain
 log = logging.getLogger(__name__)
 
 
-def salary_max(text):
+def remotive_salary_max(text):
     text = str(text or "")
-    if not re.search(r"(?i)(year|annual|/yr|per annum)", text):
+    if re.search(r"(?i)(hour|/hr|day|week|month)", text):
         return None
     values = re.findall(r"\$\s*([\d,]+(?:\.\d+)?)\s*([kK]?)", text)
     amounts = [float(n.replace(",", "")) * (1000 if suffix else 1) for n, suffix in values]
@@ -25,7 +25,7 @@ def remotive_posting(item):
     return {"external_id": str(item["id"]), "company": item.get("company_name") or "Unknown",
             "title": item.get("title", ""), "location": "Remote " + item.get("candidate_required_location", ""),
             "description": plain(item.get("description", "")), "apply_url": item["url"],
-            "salary_max": salary_max(item.get("salary")), "remote_region": item.get("candidate_required_location", "")}
+            "salary_max": remotive_salary_max(item.get("salary")), "remote_region": item.get("candidate_required_location", "")}
 
 
 def usajobs_posting(item):

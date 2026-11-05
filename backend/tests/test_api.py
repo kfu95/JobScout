@@ -45,3 +45,26 @@ def test_review_before_submission(monkeypatch):
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
+
+
+def test_board_listing_limit_is_optional(monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([Board(company=f"Company {index}", provider="ashby", slug=f"company-{index}") for index in range(3)])
+        db.commit()
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    try:
+        with TestClient(app) as client:
+            assert len(client.get("/api/boards?limit=2").json()) == 2
+            assert len(client.get("/api/boards").json()) == 3
+            assert client.get("/api/boards?limit=501").status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
