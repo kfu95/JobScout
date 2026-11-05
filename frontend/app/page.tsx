@@ -1,9 +1,10 @@
 "use client";
+import Onboarding from "./onboarding";
 import { useCallback, useEffect, useState } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Job = { id:number; company:string; provider:string; title:string; location:string; apply_url:string;
-  is_open:boolean; score:number; score_reason:string; score_method:string; application_status:string;
+  salary_status?:string; is_open:boolean; score:number; score_reason:string; score_method:string; application_status:string;
   description?:string; packet?:Packet|null; first_seen:string; last_seen:string };
 type Fact = { id:string; company?:string; role?:string; dates?:string; bullets?:string[] };
 type Packet = { candidate_name:string; summary:string; skills:string[]; selected_facts:Fact[];
@@ -65,6 +66,7 @@ export default function Dashboard() {
       ["Tracked boards",stats?.boards],["Open jobs",stats?.jobs],["Strong matches",stats?.strong_matches],
       ["Packets ready",stats?.prepared],["Approved",stats?.approved],["Reported sent",stats?.reported]
     ] as const).map(([label,n])=><div className="stat" key={label}><b>{n ?? "—"}</b><span>{label}</span></div>)}</div>
+    <Onboarding onSaved={()=>reload().catch(e=>setNotice(e.message))}/>
     <div className="columns">
       <section className="panel feed"><div className="sectionTitle"><h2>Job feed</h2><span>{jobs.length} shown</span></div>
         <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
@@ -72,7 +74,7 @@ export default function Dashboard() {
         <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Run collection to discover jobs.</p>}
           {jobs.map(j=><button className={`job ${selected?.id===j.id?"chosen":""}`} key={j.id} onClick={()=>selectJob(j.id)}>
             <span className="jobHead"><b>{j.title}</b><span className="score">{j.score}</span></span>
-            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
+            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider} · {j.salary_status} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
           </button>)}</div></section>
       <section className="panel detail">{selected ? <>
         <div className="sectionTitle"><h2>{selected.title}</h2><span className="score">{selected.score}</span></div>

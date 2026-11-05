@@ -182,7 +182,7 @@ def persist_snapshot(
                 job.missing_count = 0
             continue
         if job is None:
-            score, reason, method = score_posting(p)
+            score, reason, method = score_posting({**p, "company": board.company})
             job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=location,
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
                       score=score, score_reason=reason, score_method=method)
@@ -199,7 +199,7 @@ def persist_snapshot(
                 old_url = canonical_url(job.apply_url)
                 job.title, job.location, job.description = p["title"], location, p["description"]
                 job.apply_url, job.hash = p["apply_url"], digest
-                job.score, job.score_reason, job.score_method = score_posting(p)
+                job.score, job.score_reason, job.score_method = score_posting({**p, "company": board.company})
                 if existing_urls.get(old_url) == job.id:
                     del existing_urls[old_url]
                 db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))

@@ -27,10 +27,12 @@ services:
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_LABELS: ${GMAIL_LABELS:-}
       PROFILE_PATH: /config/profile.json
+      ONBOARDING_DIR: /onboarding
       CORS_ORIGINS: http://localhost:3000
     volumes:
       - ./config:/config:ro
       - ./config/gmail:/gmail
+      - ./config/onboarding:/onboarding
     depends_on:
       db:
         condition: service_healthy
@@ -52,10 +54,12 @@ services:
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_LABELS: ${GMAIL_LABELS:-}
       PROFILE_PATH: /config/profile.json
+      ONBOARDING_DIR: /onboarding
       POLL_SECONDS: ${POLL_SECONDS:-7200}
     volumes:
       - ./config:/config:ro
       - ./config/gmail:/gmail
+      - ./config/onboarding:/onboarding
     depends_on:
       db:
         condition: service_healthy

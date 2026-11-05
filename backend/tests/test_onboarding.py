@@ -1,0 +1,78 @@
+from io import BytesIO
+
+import pytest
+from docx import Document
+from reportlab.pdfgen import canvas
+
+from app.onboarding import extract_text, parse_resume, save_facts, load_facts, Preferences
+from app.scoring import prepare_packet, preference_filter
+
+
+@pytest.fixture(autouse=True)
+def local_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("ONBOARDING_DIR", str(tmp_path / "private"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+def test_synthetic_documents():
+    lines = ["Experience", "Engineer | Example Corp 2020 - 2024", "• Built reliable services", "Skills", "Python, SQL"]
+    doc = Document()
+    for line in lines:
+        doc.add_paragraph(line)
+    buf = BytesIO()
+    doc.save(buf)
+    facts = parse_resume(extract_text("resume.docx", buf.getvalue()))
+    assert facts[0]["company"] == "Example Corp"
+    assert facts[0]["bullets"] == ["Built reliable services"]
+    assert facts[1]["skills"] == ["Python", "SQL"]
+    assert all(not f["verified"] for f in facts)
+    pdf = BytesIO()
+    page = canvas.Canvas(pdf)
+    page.drawString(30, 700, "Engineer | Example Corp 2020 - 2024")
+    page.save()
+    assert parse_resume(extract_text("resume.pdf", pdf.getvalue()))[0]["role"] == "Engineer"
+
+
+def test_only_verified_facts_enter_packet():
+    profile = {"name": "Test", "verified_experience": []}
+    facts = [{"id": "1", "role": "Engineer", "company": "A", "dates": "2020 - 2024", "bullets": ["Built things"], "skills": ["Python"], "verified": False}]
+    save_facts(facts)
+    with pytest.raises(ValueError):
+        prepare_packet({"title": "Engineer"}, profile)
+    facts[0]["verified"] = True
+    save_facts(facts)
+    assert prepare_packet({"title": "Engineer"}, profile)["selected_facts"] == facts
+    assert load_facts(profile) == facts
+
+
+def test_preference_exclusions_and_salary():
+    prefs = Preferences(salary_floor=150000, excluded_companies=["Bad Co"], excluded_keywords=["blockchain"]).model_dump()
+    assert not preference_filter({"company": "Bad Co"}, prefs)[0]
+    assert not preference_filter({"description": "Blockchain"}, prefs)[0]
+    assert not preference_filter({"description": "Salary $100,000 - $140,000"}, prefs)[0]
+    assert preference_filter({"description": "Salary $120k - $180k"}, prefs)[0]
+    assert preference_filter({"description": "No compensation listed"}, prefs) == (True, "Salary unknown")
+
+
+def test_api_upload_review_and_revoke(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app, packet_is_current
+
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    monkeypatch.setattr("app.main.load_profile", lambda: {"verified_experience": []})
+    doc = Document()
+    doc.add_paragraph("Engineer | Example Corp 2020 - 2024")
+    doc.add_paragraph("• Built services")
+    buf = BytesIO()
+    doc.save(buf)
+    with TestClient(app) as client:
+        response = client.post("/api/onboarding/resume", files={"file": ("resume.docx", buf.getvalue())})
+        assert response.status_code == 200
+        fact = response.json()["facts"][0]
+        assert not fact["verified"]
+        fact["verified"] = True
+        assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
+        assert packet_is_current({"selected_facts": [fact]})
+        fact["verified"] = False
+        assert client.put(f"/api/onboarding/facts/{fact['id']}", json=fact).status_code == 200
+        assert not packet_is_current({"selected_facts": [{**fact, "verified": True}]})

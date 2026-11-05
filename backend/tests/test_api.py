@@ -27,6 +27,7 @@ def test_review_before_submission(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr("app.main.init_db", lambda: None)
+    monkeypatch.setattr("app.main.packet_is_current", lambda packet: True)
     monkeypatch.setattr("app.main.prepare_packet", lambda posting: {
         "candidate_name": "Test Candidate", "candidate_email": "", "summary": "Verified", "skills": ["Python"],
         "selected_facts": [{"id":"one", "company":"Test", "role":"Engineer", "bullets":["True statement"]}],

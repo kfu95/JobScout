@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from .db import get_db, init_db
 from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead, now
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
-from .scoring import prepare_packet
+from .scoring import prepare_packet, load_profile, baseline_score, preference_filter
+from .onboarding import Fact, Preferences, load_facts, save_facts, load_preferences, save_preferences, upload_resume
 from .pdf import packet_pdf
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 
@@ -23,7 +24,7 @@ app = FastAPI(title="Job Agent API", version="0.1.0", lifespan=lifespan)
 app.include_router(gmail_callback_router)
 app.include_router(gmail_router)
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=["GET", "POST", "PUT"], allow_headers=["Content-Type"])
 
 class BoardIn(BaseModel):
     company: str = Field(min_length=2, max_length=200)
@@ -64,6 +65,38 @@ def serialize_job(job, board, application=None, include_description=False):
 def record_event(db, app_row, event_type, details=""):
     db.add(ApplicationEvent(application_id=app_row.id, event_type=event_type, details=details[:1500]))
 
+@app.get("/api/onboarding")
+def onboarding():
+    profile = load_profile()
+    return {"facts": load_facts(profile), "preferences": load_preferences(profile)}
+
+@app.post("/api/onboarding/resume")
+async def resume_upload(file: UploadFile = File(...)):
+    content = await file.read(10 * 1024 * 1024 + 1)
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Resume exceeds 10 MB")
+    try:
+        return {"facts": upload_resume(file.filename or "", content, load_profile())}
+    except Exception as e:
+        raise HTTPException(400, f"Could not extract resume: {e}") from e
+
+@app.put("/api/onboarding/facts/{fact_id}")
+def update_fact(fact_id: str, fact: Fact):
+    if fact.id != fact_id:
+        raise HTTPException(400, "Fact ID cannot change")
+    facts = load_facts(load_profile())
+    for index, existing in enumerate(facts):
+        if existing["id"] == fact_id:
+            facts[index] = fact.model_dump()
+            save_facts(facts)
+            return facts[index]
+    raise HTTPException(404, "Fact not found")
+
+@app.put("/api/onboarding/preferences")
+def update_preferences(preferences: Preferences):
+    save_preferences(preferences)
+    return preferences
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "review_before_submit": True}
@@ -102,8 +135,21 @@ def list_jobs(q: str = "", min_score: int = 0, open_only: bool = True, limit: in
     if q:
         pat = f"%{q[:100]}%"
         stmt = stmt.where((Job.title.ilike(pat)) | (Board.company.ilike(pat)) | (Job.location.ilike(pat)))
-    stmt = stmt.where(Job.score >= max(0, min(min_score, 100))).order_by(Job.score.desc(), Job.first_seen.desc()).limit(max(1, min(limit, 500)))
-    return [serialize_job(job, board, application) for job, board, application in db.execute(stmt)]
+    stmt = stmt.order_by(Job.score.desc(), Job.first_seen.desc())
+    profile = load_profile()
+    preferences = load_preferences(profile)
+    result = []
+    for job, board, application in db.execute(stmt):
+        posting = {"title": job.title, "company": board.company, "location": job.location, "description": job.description}
+        allowed, salary_note = preference_filter(posting, preferences)
+        if allowed:
+            data = serialize_job(job, board, application)
+            data["score"], data["score_reason"], data["score_method"] = baseline_score(posting, profile)
+            data["salary_status"] = salary_note
+            if data["score"] >= min_score:
+                result.append(data)
+    result.sort(key=lambda item: item["score"], reverse=True)
+    return result[:max(1, min(limit, 500))]
 
 @app.get("/api/jobs/{job_id}")
 def job_detail(job_id: int, db: Session = Depends(get_db)):
@@ -150,8 +196,8 @@ def decide(job_id: int, payload: DecisionIn, db: Session = Depends(get_db)):
     elif row.status not in ("prepared", "skipped"):
         raise HTTPException(409, "Decision cannot change after advancing")
     if payload.decision == "approve":
-        if not row.packet:
-            raise HTTPException(409, "Cannot approve without verified packet")
+        if not row.packet or not packet_is_current(row.packet):
+            raise HTTPException(409, "Prepare a packet with currently verified facts first")
         row.status, row.approved_at = "approved", now()
     else:
         row.status = "skipped"
@@ -187,12 +233,18 @@ def update_status(job_id: int, payload: StatusIn, db: Session = Depends(get_db))
     db.commit()
     return {"status": row.status}
 
+def packet_is_current(packet):
+    verified = {f["id"]: f for f in load_facts(load_profile()) if f.get("verified") is True}
+    return bool(packet.get("selected_facts")) and all(verified.get(f.get("id")) == f for f in packet["selected_facts"])
+
 @app.get("/api/jobs/{job_id}/resume.pdf")
 def resume_pdf(job_id: int, db: Session = Depends(get_db)):
     job_or_404(db, job_id)
     row = db.scalar(select(Application).where(Application.job_id == job_id))
     if not row or not row.packet:
         raise HTTPException(404, "Prepare packet first")
+    if not packet_is_current(row.packet):
+        raise HTTPException(409, "Prepare a packet with currently verified facts first")
     return Response(content=packet_pdf(row.packet), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="job-{job_id}-resume.pdf"'})
 

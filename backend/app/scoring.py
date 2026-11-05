@@ -4,6 +4,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from pydantic import BaseModel, Field
+from .onboarding import load_facts, load_preferences
 
 DEFAULT_PROFILE = {
     "name": "", "skills": [],
@@ -20,25 +21,46 @@ def load_profile():
         return json.load(f)
 
 
+def preference_filter(posting, preferences):
+    text = " ".join(str(posting.get(k, "")) for k in ("title", "description", "industry")).lower()
+    company = str(posting.get("company", "")).lower()
+    for key, value in (("excluded_companies", company), ("excluded_industries", text), ("excluded_keywords", text)):
+        if any(term.strip().lower() in value for term in preferences.get(key, []) if term.strip()):
+            return False, "Excluded by preferences"
+    floor = preferences.get("salary_floor")
+    currency = preferences.get("currency", "USD").upper()
+    description = str(posting.get("description", ""))
+    amounts = re.findall(r"(?:\$|USD\s*)(\d[\d,]*(?:\.\d+)?)\s*(k)?", description, re.I) if currency == "USD" else []
+    salaries = [float(n.replace(",", "")) * (1000 if k else 1) for n, k in amounts]
+    salaries = [n for n in salaries if n >= 10000]
+    if floor and salaries and max(salaries) < floor:
+        return False, "Below salary floor"
+    return True, "Salary unknown" if not salaries else "Salary stated"
+
+
 def baseline_score(posting, profile=None):
     profile = profile or load_profile()
+    preferences = load_preferences(profile)
+    allowed, salary_note = preference_filter(posting, preferences)
+    if not allowed:
+        return 0, salary_note, "heuristic"
     title = posting["title"].lower()
     location = posting["location"].lower()
     description = posting.get("description", "").lower()
-    if re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
+    if not (preferences.get("target_titles") or preferences.get("role_families")) and re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
         return 0, "Non-target job family or level", "heuristic"
     patterns = ["engineer", "software developer", "software architect"]
-    if not any(t in title for t in patterns):
+    if not (preferences.get("target_titles") or preferences.get("role_families")) and not any(t in title for t in patterns):
         return 0, "Outside software engineering", "heuristic"
     score = 40
-    reasons = []
-    if any(target in title for target in profile.get("target_titles", [])):
+    reasons = [salary_note]
+    if any(target.strip().lower() in title for target in preferences.get("target_titles", []) + preferences.get("role_families", []) if target.strip()):
         score += 25
         reasons.append("Target title")
-    elif "senior" in title or "staff" in title:
+    elif any(level.strip().lower() in title for level in preferences.get("seniority", []) if level.strip()) or "senior" in title or "staff" in title:
         score += 15
         reasons.append("Relevant seniority")
-    if any(loc in location for loc in profile.get("preferred_locations", [])):
+    if any(loc.strip().lower() in location for loc in preferences.get("locations", []) + preferences.get("work_modes", []) if loc.strip()):
         score += 15
         reasons.append("Preferred location")
     elif not location:
@@ -82,6 +104,8 @@ def _ai_parse(model_type, system_prompt, user_payload):
 
 def score_posting(posting):
     baseline = baseline_score(posting)
+    if baseline[0] == 0:
+        return baseline
     if not (os.getenv("OPENAI_API_KEY") and os.getenv("ENABLE_AI_SCORING", "false").lower() == "true"):
         return baseline
     try:
@@ -96,7 +120,7 @@ def score_posting(posting):
 
 def prepare_packet(posting, profile=None):
     profile = profile or load_profile()
-    facts = profile.get("verified_experience") or []
+    facts = [f for f in load_facts(profile) if f.get("verified") is True]
     if not facts:
         raise ValueError("Fill config/profile.json verified_experience before generating applications")
     valid = {str(f["id"]): f for f in facts if f.get("id")}
@@ -114,11 +138,12 @@ def prepare_packet(posting, profile=None):
             draft, notes = result.why_company_draft, result.verification_notes
         except Exception:
             notes.append("AI preparation failed. Deterministic packet created instead.")
+    verified_skills = [skill for fact_id in selected_ids for skill in valid[fact_id].get("skills", [])]
     return {
         "candidate_name": profile.get("name", ""),
         "candidate_email": profile.get("email", ""),
-        "summary": profile.get("summary", ""),
-        "skills": profile.get("skills", []),
+        "summary": "",
+        "skills": verified_skills,
         "selected_facts": [valid[i] for i in selected_ids],
         "why_company_draft": draft,
         "verification_notes": notes,

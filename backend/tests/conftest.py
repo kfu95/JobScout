@@ -25,3 +25,8 @@ def gmail_setup(monkeypatch, tmp_path):
     with Session(engine) as db:
         yield gmail, db
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def isolated_onboarding(monkeypatch, tmp_path):
+    monkeypatch.setenv("ONBOARDING_DIR", str(tmp_path / "onboarding"))

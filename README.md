@@ -154,3 +154,9 @@ Collection refreshes a directory of public Greenhouse, Lever, and Ashby boards w
 `config/profile.json` supplies `target_titles`, `preferred_locations`, and optional annual `salary_floor` (USD). Jobs with missing location or salary remain eligible for review; salary filtering applies only where an annual maximum is recognizable. Results are deduplicated by source ID and normalized listing URL, although aggregator links may differ from an employer's direct URL. Aggregator listings are not automatically marked closed yet; verify availability on the linked listing. Directory rotation can take multiple days. Discovery does not use Gmail alerts.
 
 Deferred: concurrent collection coordination across API and worker, more complete salary and remote eligibility parsing, improved cross-provider identity matching, and closing aggregator listings absent from complete feeds.
+
+### Resume and preferences
+
+Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported on first use. The uploaded document, facts, and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
+
+Preferences affect the feed immediately. Company, industry and keyword exclusions and a stated salary below the annual floor remove matches. Listings without recognizable salary remain visible with salary marked unknown. Salary detection currently recognizes USD amounts in listing text and does not convert currencies or hourly rates; review compensation in the original listing.
