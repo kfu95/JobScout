@@ -10,8 +10,8 @@ import httpx
 from sqlalchemy import select
 
 from .models import JOB_LOCATION_MAX_LENGTH, Board, Job, JobVersion, now
-from .onboarding import load_preferences, preference_score_lock
-from .preferences import matches
+from .onboarding import preference_score_lock
+from .preferences import load_preferences, matches
 from .scoring import load_profile, score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
@@ -236,7 +236,10 @@ def persist_snapshot(
                     del existing_urls[old_url]
                 job.is_open = False
                 job.missing_count = 0
-            job = duplicate
+            duplicate.last_seen = now()
+            duplicate.is_open = True
+            duplicate.missing_count = 0
+            continue
         if job is None:
             if not eligible:
                 continue

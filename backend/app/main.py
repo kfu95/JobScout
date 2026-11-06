@@ -11,7 +11,8 @@ from .db import get_db, init_db
 from .models import Board, Job, JobVersion, Application, ApplicationEvent, Lead, now
 from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
 from .scoring import baseline_score, prepare_packet, load_profile
-from .onboarding import Fact, Preferences, load_facts, load_preferences, locked_facts, save_preferences, update_stored_fact, upload_resume, preference_score_lock
+from .onboarding import Fact, Preferences, load_facts, locked_facts, save_preferences, update_stored_fact, upload_resume, preference_score_lock
+from .preferences import load_preferences
 from .pdf import packet_pdf
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 

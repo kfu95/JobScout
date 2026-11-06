@@ -11,7 +11,14 @@ from app.models import Board, Job, JobVersion
 from app.onboarding import Preferences, save_preferences
 from app.preferences import matches
 
-PREFS = {"titles": ["senior software engineer"], "locations": ["new york", "remote"], "salary_floor": 150000}
+PREFS = {
+    "target_titles": ["software engineer"],
+    "seniority": [],
+    "locations": ["new york"],
+    "work_modes": ["remote"],
+    "salary_floor": 150000,
+    "currency": "USD",
+}
 
 
 def run(coro):
@@ -39,6 +46,7 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
     assert requests[1].headers["authorization-key"] == "secret"
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
+    assert not matches({**remotive[0], "location": "Remote Germany", "remote_region": ""}, PREFS)
     assert matches({**usa[0], "title": "Staff Software Engineer", "salary_max": 180000}, PREFS)
     foreign_salary = remotive_posting({
         "id": 5, "company_name": "B", "title": "Senior Software Engineer", "candidate_required_location": "USA",
@@ -231,8 +239,33 @@ def test_filtered_canonical_duplicate_is_reconciled():
         }], PREFS)
         job = db.scalar(select(Job))
         assert len(db.scalars(select(Job)).all()) == 1
-        assert job.is_open and job.score == 0
-        assert "Annual USD salary maximum: $120,000" in job.description
+        assert job.is_open and job.score > 0
+        assert job.location == "New York"
+        assert "Annual USD salary maximum" not in job.description
+
+
+def test_location_eligibility_matches_stored_and_new_jobs():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        existing = {
+            "external_id": "existing", "title": "Software Engineer", "location": "Boston",
+            "description": "", "apply_url": "https://example.com/existing",
+        }
+        persist_snapshot(db, board, [existing], preferences={**PREFS, "locations": [], "salary_floor": None})
+        persist_snapshot(db, board, [
+            existing,
+            {**existing, "external_id": "new-onsite", "apply_url": "https://example.com/new-onsite"},
+            {**existing, "external_id": "new-remote", "location": "Boston, Remote", "apply_url": "https://example.com/new-remote"},
+        ], preferences={**PREFS, "salary_floor": None})
+
+        jobs = {job.external_id: job for job in db.scalars(select(Job)).all()}
+        assert jobs["existing"].score == 0
+        assert "new-onsite" not in jobs
+        assert jobs["new-remote"].score > 0
 
 
 def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):

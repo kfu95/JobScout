@@ -66,7 +66,8 @@ def test_scoring_and_verified_packets():
     location_preferences = Preferences(target_titles=["software engineer"], locations=["ny"]).model_dump()
     germany_score = baseline_score({"title": "Software Engineer", "location": "Berlin, Germany", "description": ""}, profile, location_preferences)[0]
     new_york_score = baseline_score({"title": "Software Engineer", "location": "New York, NY", "description": ""}, profile, location_preferences)[0]
-    assert new_york_score == germany_score + 15
+    assert germany_score == 0
+    assert new_york_score > 0
 
     hybrid_preferences = Preferences(target_titles=["software engineer"], work_modes=["hybrid"]).model_dump()
     assert baseline_score({"title": "Software Engineer", "location": "Berlin / Hybrid", "description": ""}, profile, hybrid_preferences)[0] == plain_score + 15

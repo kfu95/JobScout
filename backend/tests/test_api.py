@@ -27,12 +27,14 @@ def api_engine(monkeypatch):
     engine.dispose()
 
 
-def add_job(engine, external_id="1", title="Senior Software Engineer", score=90):
+def add_job(engine, external_id="1", title="Senior Software Engineer", score=90, location="New York"):
     with Session(engine) as db:
-        board = Board(company="Example Co", provider="ashby", slug="example")
-        db.add(board)
-        db.flush()
-        p = {"title": title, "location": "New York", "description": "Python and React", "apply_url": f"https://example.com/apply/{external_id}"}
+        board = db.query(Board).filter_by(provider="ashby", slug="example").one_or_none()
+        if board is None:
+            board = Board(company="Example Co", provider="ashby", slug="example")
+            db.add(board)
+            db.flush()
+        p = {"title": title, "location": location, "description": "Python and React", "apply_url": f"https://example.com/apply/{external_id}"}
         job = Job(board_id=board.id, external_id=external_id, **p, hash=content_hash(p), score=score)
         db.add(job)
         db.commit()
@@ -140,6 +142,7 @@ def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
     monkeypatch.setenv("ENABLE_AI_SCORING", "true")
     monkeypatch.setattr(scoring, "_ai_parse", lambda *args, **kwargs: pytest.fail("Preference save invoked AI scoring"))
     engineer_id = add_job(api_engine, "engineer", "Senior Software Engineer", 5)
+    boston_id = add_job(api_engine, "boston", "Senior Software Engineer", 95, "Boston")
     with Session(api_engine) as db:
         board = db.query(Board).one()
         p = {"title": "Senior Sales Manager", "location": "Remote", "description": "Enterprise sales", "apply_url": "https://example.com/apply/sales"}
@@ -155,6 +158,7 @@ def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
         assert [job["id"] for job in feed] == [engineer_id]
         assert client.get(f"/api/jobs/{engineer_id}").json()["score"] == 80
         assert client.get(f"/api/jobs/{engineer_id}").json()["score_method"] == "heuristic"
+        assert client.get(f"/api/jobs/{boston_id}").json()["score"] == 0
         assert client.get(f"/api/jobs/{sales_id}").json()["score"] == 0
         assert client.get("/api/stats").json()["strong_matches"] == 1
 

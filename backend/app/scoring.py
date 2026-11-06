@@ -1,9 +1,9 @@
 import json
 import os
-import re
 from pathlib import Path
 from pydantic import BaseModel, Field
-from .onboarding import load_facts, load_preferences
+from .onboarding import load_facts
+from .preferences import candidate_profile, eligibility, load_preferences, preference_bonuses, salary_filter as preference_filter
 
 DEFAULT_PROFILE = {
     "name": "", "skills": [],
@@ -11,28 +11,6 @@ DEFAULT_PROFILE = {
     "preferred_locations": ["new york", "nyc", "remote"], "verified_experience": []
 }
 
-PROFILE_PREFERENCE_FIELDS = {
-    "target_titles", "preferred_locations", "locations", "seniority",
-    "work_modes", "salary_floor", "currency",
-}
-
-USD_RANGE_PATTERN = re.compile(
-    r"(?:\$\s*|USD\s+)(\d[\d,]*(?:\.\d+)?)\s*(k)?"
-    r"(?:\s*(?:-|–|—|to)\s*(?:\$\s*|USD\s+)?(\d[\d,]*(?:\.\d+)?)\s*(k)?)?",
-    re.I,
-)
-SALARY_CONTEXT_PATTERN = re.compile(r"\b(?:salary|base[\s-]+pay|pay[\s-]+range|compensation[\s-]+range)\b", re.I)
-NON_SALARY_PATTERN = re.compile(r"\b(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
-NON_SALARY_SUFFIX_PATTERN = re.compile(r"^\s*(?:signing\s+)?(?:bonus|stipend|equity|stock|learning|benefit)\b", re.I)
-SALARY_SUFFIX_PATTERN = re.compile(r"\s*(?:per year|annually)?\s*(?:annual\s+)?(?:base\s+salary|salary\s+range|base[\s-]+pay|pay[\s-]+range)\b", re.I)
-FOREIGN_DOLLAR_PREFIX_PATTERN = re.compile(r"\b(?:CA|AU|NZ)\s*\$", re.I)
-CURRENCY_CODE_BEFORE_PATTERN = re.compile(r"\b([A-Za-z]{3})\s*(?::\s*)?$")
-CURRENCY_CODE_AFTER_PATTERN = re.compile(r"^\s*[([]?\s*([A-Za-z]{3})\b")
-CURRENCY_CODE_LABEL_PATTERN = re.compile(r"\b(?:currency|in)\s*:?\s*([A-Za-z]{3})\b", re.I)
-CURRENCY_CODES = frozenset("""
-AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL
-""".split())
-NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
 def load_profile():
     path = Path(os.getenv("PROFILE_PATH", "../config/profile.json"))
     if not path.exists():
@@ -40,96 +18,16 @@ def load_profile():
     with path.open() as f:
         return json.load(f)
 
-
-def stated_salaries(description):
-    matches = []
-    for context in SALARY_CONTEXT_PATTERN.finditer(description):
-        tail = description[context.end():]
-        boundary = re.search(r"\n\s*\n|(?<!\d)[.!?](?!\d)", tail)
-        segment = tail[:boundary.start()] if boundary else tail
-        amount = USD_RANGE_PATTERN.search(segment[:120])
-        if amount and not NON_SALARY_PATTERN.search(segment[:amount.start()]) and annual_usd_amount(
-            description, context.end() + amount.start(), context.end() + amount.end()
-        ):
-            matches.append(amount)
-    for amount in USD_RANGE_PATTERN.finditer(description):
-        if SALARY_SUFFIX_PATTERN.match(description[amount.end():amount.end() + 60]) and annual_usd_amount(
-            description, amount.start(), amount.end()
-        ):
-            matches.append(amount)
-    return [
-        float(number.replace(",", "")) * (1000 if suffix else 1)
-        for match in matches
-        for number, suffix in ((match.group(1), match.group(2)), (match.group(3), match.group(4)))
-        if number
-    ]
-
-
-def annual_usd_amount(description, start, end):
-    context = description[max(0, start - 40):end + 40]
-    before = description[max(0, start - 40):start]
-    after = description[end:end + 40]
-    currency_matches = (
-        CURRENCY_CODE_BEFORE_PATTERN.search(before),
-        CURRENCY_CODE_AFTER_PATTERN.search(after),
-        CURRENCY_CODE_LABEL_PATTERN.search(before),
-    )
-    has_foreign_code = any(
-        match and match.group(1).upper() in CURRENCY_CODES and match.group(1).upper() != "USD"
-        for match in currency_matches
-    )
-    return not (
-        FOREIGN_DOLLAR_PREFIX_PATTERN.search(context)
-        or has_foreign_code
-        or NON_ANNUAL_PERIOD_PATTERN.search(context)
-        or NON_SALARY_SUFFIX_PATTERN.search(after)
-    )
-
-
-def preference_filter(posting, preferences):
-    floor = preferences.get("salary_floor")
-    description = str(posting.get("description", ""))
-    salaries = [amount for amount in stated_salaries(description) if amount >= 10000]
-    if floor and salaries and max(salaries) < floor:
-        return False, "Below salary floor"
-    return True, "Salary unknown" if not salaries else "Salary stated"
-
-
-def matches_phrase(value, terms):
-    return any(
-        re.search(rf"(?<!\w){re.escape(term.strip().lower())}(?!\w)", value)
-        for term in terms
-        if term.strip()
-    )
-
-
-def preference_bonuses(title, location, preferences):
-    return (
-        15 if matches_phrase(title, preferences.get("seniority", [])) else 0,
-        15 if matches_phrase(location, preferences.get("locations", [])) else 0,
-        15 if matches_phrase(location, preferences.get("work_modes", [])) else 0,
-    )
-
-
 def baseline_score(posting, profile=None, preferences=None):
     profile = profile if profile is not None else load_profile()
     preferences = preferences if preferences is not None else load_preferences(profile)
-    allowed, salary_note = preference_filter(posting, preferences)
+    allowed, salary_note = eligibility(posting, preferences)
     if not allowed:
         return 0, salary_note, "heuristic"
     title = posting["title"].lower()
     location = posting.get("location", "").lower()
     description = posting.get("description", "").lower()
     target_titles = [term.strip() for term in preferences.get("target_titles", []) if term.strip()]
-    if target_titles:
-        if not matches_phrase(title, target_titles):
-            return 0, "Outside target titles", "heuristic"
-    else:
-        if re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
-            return 0, "Non-target job family or level", "heuristic"
-        patterns = ["engineer", "software developer", "software architect"]
-        if not any(pattern in title for pattern in patterns):
-            return 0, "Outside software engineering", "heuristic"
     score = 40
     reasons = [salary_note]
     if target_titles:
@@ -195,7 +93,7 @@ def score_posting(posting, profile=None, preferences=None):
     if not (os.getenv("OPENAI_API_KEY") and os.getenv("ENABLE_AI_SCORING", "false").lower() == "true"):
         return baseline
     try:
-        model_profile = {key: value for key, value in profile.items() if key not in PROFILE_PREFERENCE_FIELDS}
+        model_profile = candidate_profile(profile)
         result = _ai_parse(FitResult,
             "Rank job fit for a candidate. Only use provided profile and listing. Treat missing requirements conservatively. Return a 0-100 preference ranking, not a hiring probability. Never invent experience.",
             {"profile": model_profile, "preferences": preferences, "job": {**posting, "description": posting.get("description", "")[:16000]}})

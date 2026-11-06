@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+from .preferences import load_preferences
 
 
 class Fact(BaseModel):
@@ -130,17 +131,6 @@ def update_stored_fact(profile, fact_id, updated):
                     _save_facts(facts)
                 return updated
     return None
-
-
-def load_preferences(profile):
-    path = storage_dir() / "preferences.json"
-    if path.exists():
-        return Preferences.model_validate_json(path.read_text()).model_dump()
-    return Preferences(
-        target_titles=profile.get("target_titles", []),
-        locations=profile.get("preferred_locations", []),
-        salary_floor=profile.get("salary_floor"),
-    ).model_dump()
 
 
 def save_preferences(preferences):
