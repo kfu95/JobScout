@@ -6,7 +6,7 @@ from app.models import Board, Job, JobVersion
 import app.collectors as collectors
 import app.scoring as scoring
 from app.collectors import normalize, content_hash, persist_snapshot
-from app.onboarding import Preferences, save_preferences
+from app.onboarding import Preferences, load_preferences, save_preferences
 from app.scoring import baseline_score, prepare_packet, score_posting
 
 
@@ -106,23 +106,64 @@ def test_allowed_ai_score_reserves_zero_for_hard_filters(monkeypatch):
     assert rejected[0] == 0 and rejected[2] == "heuristic"
 
 
-def test_collection_uses_preferences_current_after_fetch(monkeypatch):
+def test_collection_uses_one_saved_preference_snapshot(monkeypatch):
     async def scenario():
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        save_preferences(Preferences(target_titles=["software engineer"]))
+        legacy_profile = {
+            "target_titles": ["software engineer"],
+            "preferred_locations": ["new york"],
+            "salary_floor": 150000,
+            "skills": [],
+        }
+        assert load_preferences(legacy_profile)["salary_floor"] == 150000
+        save_preferences(Preferences(
+            target_titles=["software engineer"],
+            locations=["boston"],
+            work_modes=["hybrid"],
+            salary_floor=100000,
+        ))
+        monkeypatch.setattr(collectors, "load_profile", lambda: legacy_profile)
         with Session(engine) as db:
-            board = Board(company="Test", provider="ashby", slug="test")
+            board = Board(company="Test", provider="lever", slug="test")
             db.add(board)
             db.commit()
 
             async def fetch_with_preference_change(client, fetched_board):
-                save_preferences(Preferences(target_titles=["sales engineer"]))
-                return [{"external_id": "sales", "title": "Sales Engineer", "location": "", "description": "", "apply_url": "https://example.com/sales"}]
+                save_preferences(Preferences(
+                    target_titles=["software engineer"],
+                    locations=["new york"],
+                    salary_floor=150000,
+                ))
+                return [normalize("lever", {
+                    "id": "boston-job",
+                    "text": "Software Engineer",
+                    "categories": {"location": "Boston"},
+                    "workplaceType": "hybrid",
+                    "salaryRange": {"currency": "USD", "interval": "per-year-salary", "max": 120000},
+                    "applyUrl": "https://example.com/boston-job",
+                })]
+
+            async def no_directory(_db, _client):
+                return 0
+
+            async def no_aggregators(_db, _client, _preferences, _existing_urls):
+                return []
 
             monkeypatch.setattr(collectors, "fetch_board", fetch_with_preference_change)
+            monkeypatch.setattr("app.discovery.refresh_directory", no_directory)
+            monkeypatch.setattr("app.aggregators.collect_aggregators", no_aggregators)
             result = await collectors.collect_all(db)
-            assert result[0]["ok"] is True
-            assert db.scalar(select(Job).where(Job.external_id == "sales")).score > 0
+            board_result = next(item for item in result if item.get("company") == "Test")
+            job = db.scalar(select(Job).where(Job.external_id == "boston-job"))
+            assert board_result["new"] == 1
+            assert job.score > 0
+            assert job.location == "Boston, Hybrid"
+            assert "Annual USD salary maximum: $120,000" in job.description
+            assert baseline_score(
+                {"title": job.title, "location": job.location, "description": job.description},
+                legacy_profile,
+                Preferences(target_titles=["software engineer"], salary_floor=150000).model_dump(),
+            )[0] == 0
 
     asyncio.run(scenario())

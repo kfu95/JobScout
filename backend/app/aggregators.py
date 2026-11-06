@@ -87,7 +87,14 @@ def store_aggregator(db, provider, postings, preferences, existing_urls=None):
             board = Board(company=company[:200], provider=provider, slug=slug)
             db.add(board)
             db.commit()
-        result = persist_snapshot(db, board, items, close_missing=False, existing_urls=existing_urls)
+        result = persist_snapshot(
+            db,
+            board,
+            items,
+            close_missing=False,
+            existing_urls=existing_urls,
+            preferences=preferences,
+        )
         for key in stats:
             stats[key] += result[key]
     return stats

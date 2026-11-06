@@ -138,7 +138,11 @@ def load_preferences(profile):
     path = storage_dir() / "preferences.json"
     if path.exists():
         return Preferences.model_validate_json(path.read_text()).model_dump()
-    return Preferences(target_titles=profile.get("target_titles", []), locations=profile.get("preferred_locations", [])).model_dump()
+    return Preferences(
+        target_titles=profile.get("target_titles", []),
+        locations=profile.get("preferred_locations", []),
+        salary_floor=profile.get("salary_floor"),
+    ).model_dump()
 
 
 def save_preferences(preferences):

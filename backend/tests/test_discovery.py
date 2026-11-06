@@ -8,6 +8,7 @@ from app.collectors import collect_all, normalize, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
 from app.models import Board, Job, JobVersion
+from app.onboarding import Preferences, save_preferences
 from app.preferences import matches
 
 PREFS = {"titles": ["senior software engineer"], "locations": ["new york", "remote"], "salary_floor": 150000}
@@ -66,7 +67,7 @@ def test_ats_provider_contract_normalization():
         "workplaceType": "hybrid",
         "salaryRange": {"currency": "USD", "interval": "per-year-salary", "min": 100000, "max": 120000},
     })
-    assert lever["location"] == "San Francisco, New York"
+    assert lever["location"] == "San Francisco, New York, Hybrid"
     assert lever["salary_max"] == 120000
     assert matches({**lever, "salary_max": 180000}, PREFS)
     assert not matches(lever, PREFS)
@@ -78,6 +79,12 @@ def test_ats_provider_contract_normalization():
     })
     assert lever_remote["location"] == "United States, Remote"
     assert matches(lever_remote, PREFS)
+
+    lever_onsite = normalize("lever", {
+        "id": "lever-3", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-3",
+        "categories": {"location": "Boston"}, "workplaceType": "on-site",
+    })
+    assert lever_onsite["location"] == "Boston, Onsite"
 
     ashby_hybrid = normalize("ashby", {
         "jobUrl": "https://example.com/ashby-1", "title": "Staff Software Engineer", "location": "Boston",
@@ -107,7 +114,7 @@ def test_ats_provider_contract_normalization():
     assert not matches(ashby, PREFS)
 
     assert normalize("lever", {
-        "id": "lever-3", "text": "Engineer", "applyUrl": "https://example.com/lever-3",
+        "id": "lever-4", "text": "Engineer", "applyUrl": "https://example.com/lever-4",
         "categories": {}, "salaryRange": {"currency": "EUR", "interval": "per-year-salary", "max": 180000},
     })["salary_max"] is None
 
@@ -213,6 +220,11 @@ def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
         board = Board(company="Example", provider="greenhouse", slug="example")
         db.add(board)
         db.commit()
+        save_preferences(Preferences(
+            target_titles=["staff software engineer"],
+            locations=["new york"],
+            salary_floor=150000,
+        ))
         posting = {"external_id": "1", "company": "Example", "title": "Staff Software Engineer", "location": "New York", "description": "$100,000 annual benefit coverage", "apply_url": "https://example.com/job/1"}
 
         async def no_directory(_db, _client):
@@ -227,7 +239,6 @@ def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
         monkeypatch.setattr("app.discovery.refresh_directory", no_directory)
         monkeypatch.setattr("app.aggregators.collect_aggregators", no_aggregators)
         monkeypatch.setattr("app.collectors.fetch_board", one_posting)
-        monkeypatch.setattr("app.preferences.discovery_preferences", lambda: PREFS)
         run(collect_all(db))
         assert db.scalar(select(Job)) is not None
 

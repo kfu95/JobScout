@@ -33,8 +33,14 @@ def normalized_location(locations, workplace_type=""):
         if value and key not in seen:
             values.append(value)
             seen.add(key)
-    if str(workplace_type or "").casefold() == "remote" and "remote" not in seen:
-        values.append("Remote")
+    workplace = {
+        "remote": "Remote",
+        "hybrid": "Hybrid",
+        "onsite": "Onsite",
+        "on-site": "Onsite",
+    }.get(str(workplace_type or "").casefold())
+    if workplace and workplace.casefold() not in seen:
+        values.append(workplace)
     return ", ".join(values)
 
 
@@ -191,11 +197,20 @@ def persist_snapshot(
     existing_urls=None,
     observed_external_ids=None,
     profile=None,
+    preferences=None,
 ):
     """Apply a COMPLETE successful snapshot. Failed fetches must never close jobs."""
     profile = profile if profile is not None else load_profile()
-    preferences = load_preferences(profile)
-    unique_postings = {p["external_id"]: p for p in postings if p.get("title") and p.get("apply_url")}
+    preferences = preferences if preferences is not None else load_preferences(profile)
+    unique_postings = {}
+    for posting in postings:
+        if not posting.get("title") or not posting.get("apply_url"):
+            continue
+        posting = {**posting, "description": str(posting.get("description") or "")}
+        maximum = salary_amount(posting.get("salary_max"))
+        if maximum and "annual usd salary" not in posting["description"].casefold():
+            posting["description"] = f'{posting["description"]}\nAnnual USD salary maximum: {maximum}'.strip()
+        unique_postings[posting["external_id"]] = posting
     if observed_external_ids is None:
         observed_external_ids = set(unique_postings)
     old_jobs = {j.external_id: j for j in db.scalars(select(Job).where(Job.board_id == board.id)).all()}
@@ -266,9 +281,9 @@ async def collect_all(db):
     from .aggregators import collect_aggregators
     from .discovery import refresh_directory, mark
     from .models import DiscoveryState
-    from .preferences import discovery_preferences, matches
-    preferences = discovery_preferences()
+    from .preferences import matches
     profile = load_profile()
+    preferences = load_preferences(profile)
     results = []
     async with httpx.AsyncClient(timeout=25, follow_redirects=False, headers={"Accept": "application/json", "User-Agent": "PersonalJobTracker/0.1"}) as client:
         try:
@@ -298,6 +313,7 @@ async def collect_all(db):
                     existing_urls=existing_urls,
                     observed_external_ids=observed_ids,
                     profile=profile,
+                    preferences=preferences,
                 )
                 results.append({"company": board.company, "provider": board.provider, "ok": True, **stats})
             except Exception as e:
