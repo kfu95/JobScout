@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-from .preferences import load_preferences
 
 
 class Fact(BaseModel):

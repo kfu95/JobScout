@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 from .onboarding import load_facts
-from .preferences import candidate_profile, eligibility, load_preferences, preference_bonuses, salary_filter as preference_filter
+from .preferences import candidate_profile, eligibility, load_preferences, preference_bonuses
 
 DEFAULT_PROFILE = {
     "name": "", "skills": [],
@@ -102,7 +102,7 @@ def score_posting(posting, profile=None, preferences=None):
         if boost:
             reasoning += " | Saved preference boost"
         return max(1, min(100, result.score + boost)), reasoning, "AI"
-    except Exception as exc:
+    except Exception:
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"
 
 
