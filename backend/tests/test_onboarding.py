@@ -53,12 +53,8 @@ def test_only_verified_facts_enter_packet():
     assert load_facts(profile) == facts
 
 
-def test_preference_exclusions_and_salary():
-    prefs = Preferences(salary_floor=150000, excluded_companies=["Bad Co"], excluded_keywords=["blockchain"]).model_dump()
-    assert not preference_filter({"company": "Bad Co"}, prefs)[0]
-    assert not preference_filter({"description": "Blockchain"}, prefs)[0]
-    assert preference_filter({"title": "Software Engineer", "description": "Paid time off"}, Preferences(excluded_keywords=["AI"]).model_dump())[0]
-    assert not preference_filter({"title": "AI Software Engineer"}, Preferences(excluded_keywords=["AI"]).model_dump())[0]
+def test_preference_salary():
+    prefs = Preferences(salary_floor=150000).model_dump()
     assert not preference_filter({"description": "Salary $100,000 - $140,000"}, prefs)[0]
     assert not preference_filter({"description": "Compensation range:\n$100,000-$140,000"}, prefs)[0]
     assert preference_filter({"description": "Salary: $25,000 signing bonus"}, prefs) == (True, "Salary unknown")
@@ -68,9 +64,6 @@ def test_preference_exclusions_and_salary():
     assert preference_filter({"description": "No compensation listed"}, prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Benefits include a $10,000 annual learning stipend"}, prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Signing bonus $50,000 and equity grant $100,000"}, prefs) == (True, "Salary unknown")
-    identity_prefs = Preferences(excluded_companies=[" Meta "]).model_dump()
-    assert not preference_filter({"company": "Meta, Inc."}, identity_prefs)[0]
-    assert preference_filter({"company": "Metabase"}, identity_prefs)[0]
     usd_prefs = Preferences(salary_floor=200000).model_dump()
     assert preference_filter({"description": "Compensation range: $190,000-$220,000 CAD"}, usd_prefs) == (True, "Salary unknown")
     assert preference_filter({"description": "Salary: $20,000 per month"}, usd_prefs) == (True, "Salary unknown")

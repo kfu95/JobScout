@@ -29,10 +29,8 @@ class Preferences(BaseModel):
     work_modes: list[str] = Field(default_factory=list)
     salary_floor: float | None = Field(default=None, ge=0)
     currency: Literal["USD"] = "USD"
-    excluded_companies: list[str] = Field(default_factory=list)
-    excluded_keywords: list[str] = Field(default_factory=list)
 
-    @field_validator("target_titles", "seniority", "locations", "work_modes", "excluded_companies", "excluded_keywords")
+    @field_validator("target_titles", "seniority", "locations", "work_modes")
     @classmethod
     def clean_terms(cls, terms):
         return [term.strip() for term in terms if term.strip()]

@@ -200,17 +200,39 @@ def test_filtered_observation_does_not_close_live_job():
         db.commit()
         posting = {"external_id": "1", "company": "Example", "title": "Senior Software Engineer", "location": "New York", "description": "", "apply_url": "https://example.com/job/1"}
         persist_snapshot(db, board, [posting])
-        moved = {**posting, "location": "Boston"}
+        moved = {**posting, "location": "Boston", "salary_max": 120000}
+        unseen = {**moved, "external_id": "2", "apply_url": "https://example.com/job/2"}
         assert not matches(moved, PREFS)
         for _ in range(2):
-            persist_snapshot(
-                db,
-                board,
-                [moved] if matches(moved, PREFS) else [],
-                observed_external_ids={moved["external_id"]},
-            )
+            persist_snapshot(db, board, [moved, unseen], preferences=PREFS)
         job = db.scalar(select(Job))
-        assert job.is_open and job.missing_count == 0
+        assert len(db.scalars(select(Job)).all()) == 1
+        assert job.is_open and job.missing_count == 0 and job.score == 0
+        assert job.location == "Boston"
+        assert "Annual USD salary maximum: $120,000" in job.description
+
+
+def test_filtered_canonical_duplicate_is_reconciled():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        posting = {"external_id": "1", "title": "Senior Software Engineer", "location": "New York", "description": "", "apply_url": "https://example.com/job/1"}
+        persist_snapshot(db, board, [posting], preferences=PREFS)
+        store_aggregator(db, "remotive", [{
+            **posting,
+            "external_id": "remote-1",
+            "company": "Example",
+            "location": "Remote Germany",
+            "remote_region": "Germany",
+            "salary_max": 120000,
+        }], PREFS)
+        job = db.scalar(select(Job))
+        assert len(db.scalars(select(Job)).all()) == 1
+        assert job.is_open and job.score == 0
+        assert "Annual USD salary maximum: $120,000" in job.description
 
 
 def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):

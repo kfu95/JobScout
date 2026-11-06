@@ -7,7 +7,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from .discovery import elapsed, mark, polite_get
 from .models import Board, DiscoveryState
-from .collectors import persist_snapshot, plain
+from .collectors import canonical_url, existing_url_index, persist_snapshot, plain
+from .preferences import matches
 
 log = logging.getLogger(__name__)
 
@@ -74,16 +75,19 @@ async def fetch_usajobs(client, key, email):
 
 
 def store_aggregator(db, provider, postings, preferences, existing_urls=None):
-    from .preferences import matches
+    if existing_urls is None:
+        existing_urls = existing_url_index(db)
     grouped = {}
     for posting in postings:
-        if matches(posting, preferences):
-            grouped.setdefault(posting["company"], []).append(posting)
+        grouped.setdefault(posting["company"], []).append(posting)
     stats = {"new": 0, "updated": 0, "seen": 0}
     for company, items in grouped.items():
         slug = hashlib.sha256(company.encode()).hexdigest()
         board = db.scalar(select(Board).where(Board.provider == provider, Board.slug == slug))
         if board is None:
+            known_url = any(canonical_url(item["apply_url"]) in existing_urls for item in items)
+            if not known_url and not any(matches(item, preferences) for item in items):
+                continue
             board = Board(company=company[:200], provider=provider, slug=slug)
             db.add(board)
             db.commit()

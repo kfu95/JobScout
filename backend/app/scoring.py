@@ -28,9 +28,6 @@ CURRENCY_CODES = frozenset("""
 AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL
 """.split())
 NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
-COMPANY_SUFFIXES = {"co", "company", "corp", "corporation", "inc", "incorporated", "llc", "ltd", "limited"}
-
-
 def load_profile():
     path = Path(os.getenv("PROFILE_PATH", "../config/profile.json"))
     if not path.exists():
@@ -84,21 +81,7 @@ def annual_usd_amount(description, start, end):
     )
 
 
-def normalize_company(value):
-    words = re.sub(r"[^\w]+", " ", str(value).casefold()).split()
-    while words and words[-1] in COMPANY_SUFFIXES:
-        words.pop()
-    return " ".join(words)
-
-
 def preference_filter(posting, preferences):
-    text = " ".join(str(posting.get(k, "")) for k in ("title", "description", "industry")).lower()
-    company = normalize_company(posting.get("company", ""))
-    excluded_companies = {normalize_company(term) for term in preferences.get("excluded_companies", [])}
-    if company and company in excluded_companies:
-        return False, "Excluded by preferences"
-    if matches_phrase(text, preferences.get("excluded_keywords", [])):
-        return False, "Excluded by preferences"
     floor = preferences.get("salary_floor")
     description = str(posting.get("description", ""))
     salaries = [amount for amount in stated_salaries(description) if amount >= 10000]

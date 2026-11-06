@@ -146,7 +146,7 @@ def test_preferences_rescore_stored_jobs_once(api_engine, monkeypatch):
         db.commit()
         sales_id = sales.id
 
-    preferences = {"target_titles": ["senior software engineer"], "locations": ["new york"], "work_modes": [], "seniority": [], "salary_floor": None, "currency": "USD", "excluded_companies": [], "excluded_keywords": []}
+    preferences = {"target_titles": ["senior software engineer"], "locations": ["new york"], "work_modes": [], "seniority": [], "salary_floor": None, "currency": "USD"}
     with TestClient(app) as client:
         assert client.put("/api/onboarding/preferences", json=preferences).status_code == 200
         feed = client.get("/api/jobs", params={"min_score": 70}).json()

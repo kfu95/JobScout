@@ -11,10 +11,12 @@ from sqlalchemy import select
 
 from .models import JOB_LOCATION_MAX_LENGTH, Board, Job, JobVersion, now
 from .onboarding import load_preferences, preference_score_lock
+from .preferences import matches
 from .scoring import load_profile, score_posting
 
 ALLOWED_PROVIDERS = {"greenhouse", "lever", "ashby"}
 SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,150}$")
+GENERATED_SALARY_PATTERN = re.compile(r"(?im)^Annual USD salary maximum: \$[\d,]+(?:\.\d+)?\s*$")
 
 
 def plain(value):
@@ -195,7 +197,6 @@ def persist_snapshot(
     postings: list[dict],
     close_missing=True,
     existing_urls=None,
-    observed_external_ids=None,
     profile=None,
     preferences=None,
 ):
@@ -207,12 +208,11 @@ def persist_snapshot(
         if not posting.get("title") or not posting.get("apply_url"):
             continue
         posting = {**posting, "description": str(posting.get("description") or "")}
+        posting["description"] = GENERATED_SALARY_PATTERN.sub("", posting["description"]).strip()
         maximum = salary_amount(posting.get("salary_max"))
-        if maximum and "annual usd salary" not in posting["description"].casefold():
+        if maximum:
             posting["description"] = f'{posting["description"]}\nAnnual USD salary maximum: {maximum}'.strip()
         unique_postings[posting["external_id"]] = posting
-    if observed_external_ids is None:
-        observed_external_ids = set(unique_postings)
     old_jobs = {j.external_id: j for j in db.scalars(select(Job).where(Job.board_id == board.id)).all()}
     if existing_urls is None:
         existing_urls = existing_url_index(db)
@@ -220,6 +220,7 @@ def persist_snapshot(
     for external_id, p in unique_postings.items():
         digest = content_hash(p)
         location = persisted_location(p.get("location"))
+        eligible = matches(p, preferences)
         job = old_jobs.pop(external_id, None)
         url = canonical_url(p["apply_url"])
         duplicate_id = existing_urls.get(url)
@@ -227,9 +228,6 @@ def persist_snapshot(
             duplicate = db.get(Job, duplicate_id)
             if duplicate is None:
                 raise ValueError("Canonical URL index references a missing job")
-            duplicate.last_seen = now()
-            duplicate.is_open = True
-            duplicate.missing_count = 0
             if duplicate.board_id == board.id:
                 old_jobs.pop(duplicate.external_id, None)
             if job is not None:
@@ -238,8 +236,10 @@ def persist_snapshot(
                     del existing_urls[old_url]
                 job.is_open = False
                 job.missing_count = 0
-            continue
+            job = duplicate
         if job is None:
+            if not eligible:
+                continue
             score, reason, method = score_posting({**p, "company": board.company}, profile, preferences)
             job = Job(board_id=board.id, external_id=external_id, title=p["title"], location=location,
                       description=p["description"], apply_url=p["apply_url"], hash=digest,
@@ -253,18 +253,20 @@ def persist_snapshot(
             job.last_seen = now()
             job.is_open = True
             job.missing_count = 0
-            if job.hash != digest:
+            changed = job.hash != digest
+            if changed:
                 old_url = canonical_url(job.apply_url)
                 job.title, job.location, job.description = p["title"], location, p["description"]
                 job.apply_url, job.hash = p["apply_url"], digest
-                job.score, job.score_reason, job.score_method = score_posting({**p, "company": board.company}, profile, preferences)
                 if existing_urls.get(old_url) == job.id:
                     del existing_urls[old_url]
                 db.add(JobVersion(job_id=job.id, hash=digest, title=job.title, location=job.location, description=job.description))
                 stats["updated"] += 1
+            if not eligible:
+                job.score, job.score_reason, job.score_method = 0, "Outside discovery preferences", "heuristic"
+            elif changed or job.score_reason == "Outside discovery preferences":
+                job.score, job.score_reason, job.score_method = score_posting({**p, "company": board.company}, profile, preferences)
             existing_urls[url] = job.id
-    for external_id in observed_external_ids:
-        old_jobs.pop(external_id, None)
     for job in old_jobs.values():
         if close_missing and job.is_open:
             job.missing_count += 1
@@ -281,7 +283,6 @@ async def collect_all(db):
     from .aggregators import collect_aggregators
     from .discovery import refresh_directory, mark
     from .models import DiscoveryState
-    from .preferences import matches
     profile = load_profile()
     preferences = load_preferences(profile)
     results = []
@@ -304,14 +305,11 @@ async def collect_all(db):
         for board in boards:
             try:
                 postings = await fetch_board(client, board)
-                eligible = [posting for posting in postings if matches(posting, preferences)]
-                observed_ids = {posting["external_id"] for posting in postings}
                 stats = persist_snapshot(
                     db,
                     board,
-                    eligible,
+                    postings,
                     existing_urls=existing_urls,
-                    observed_external_ids=observed_ids,
                     profile=profile,
                     preferences=preferences,
                 )
