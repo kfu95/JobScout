@@ -90,10 +90,12 @@ def test_changed_fact_invalidates_other_pre_submission_packets(api_engine, statu
 
     changed = {**fact, "verified": False}
     with TestClient(app) as client:
+        assert client.get("/api/stats").json()["prepared"] == (1 if status == "prepared" else 0)
         assert client.put(f"/api/onboarding/facts/{fact['id']}", json=changed).status_code == 200
         detail = client.get(f"/api/jobs/{job_id}").json()
         assert detail["application_status"] == status
         assert detail["packet"] is None
+        assert client.get("/api/stats").json()["prepared"] == 0
 
 
 def test_equal_fact_retry_reconciles_approved_packet(api_engine):

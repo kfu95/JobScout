@@ -90,6 +90,39 @@ def test_ai_scoring_preserves_selected_seniority(monkeypatch):
     assert staff[0] == plain[0] + 15 and staff[2] == "AI"
 
 
+def test_ai_scoring_uses_saved_location_and_work_mode_preferences(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ENABLE_AI_SCORING", "true")
+    payloads = []
+
+    def equal_model_score(_model, _prompt, payload):
+        payloads.append(payload)
+        return scoring.FitResult(score=60, reasoning="Fit", strengths=[], gaps=[])
+
+    monkeypatch.setattr(scoring, "_ai_parse", equal_model_score)
+    preferences = Preferences(
+        target_titles=["software engineer"], locations=["boston"], work_modes=["hybrid"]
+    ).model_dump()
+    profile = {
+        "name": "Test Candidate", "skills": [], "target_titles": ["sales manager"],
+        "preferred_locations": ["new york"], "salary_floor": 200000,
+    }
+    hybrid = score_posting(
+        {"title": "Software Engineer", "location": "Boston, Hybrid", "description": ""},
+        profile,
+        preferences,
+    )
+    onsite = score_posting(
+        {"title": "Software Engineer", "location": "Boston, Onsite", "description": ""},
+        profile,
+        preferences,
+    )
+
+    assert hybrid[0] == onsite[0] + 15
+    assert payloads[0]["profile"] == {"name": "Test Candidate", "skills": []}
+    assert payloads[0]["preferences"] == preferences
+
+
 def test_allowed_ai_score_reserves_zero_for_hard_filters(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setenv("ENABLE_AI_SCORING", "true")

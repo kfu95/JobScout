@@ -291,9 +291,15 @@ def add_lead(payload: LeadIn, db: Session = Depends(get_db)):
 
 @app.get("/api/stats")
 def stats(db: Session = Depends(get_db)):
+    prepared_applications = db.scalars(select(Application).where(Application.status == "prepared")).all()
+    with locked_facts(load_profile()) as facts:
+        prepared_count = sum(
+            bool(application.packet) and packet_is_current(application.packet, facts)
+            for application in prepared_applications
+        )
     return {"boards": db.scalar(select(func.count(Board.id))) or 0,
             "jobs": db.scalar(select(func.count(Job.id)).where(Job.is_open.is_(True))) or 0,
             "strong_matches": db.scalar(select(func.count(Job.id)).where(Job.is_open.is_(True), Job.score >= 80)) or 0,
-            "prepared": db.scalar(select(func.count(Application.id)).where(Application.status == "prepared")) or 0,
+            "prepared": prepared_count,
             "approved": db.scalar(select(func.count(Application.id)).where(Application.status == "approved")) or 0,
             "reported": db.scalar(select(func.count(Application.id)).where(Application.status == "submission_reported")) or 0}

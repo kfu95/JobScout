@@ -11,6 +11,11 @@ DEFAULT_PROFILE = {
     "preferred_locations": ["new york", "nyc", "remote"], "verified_experience": []
 }
 
+PROFILE_PREFERENCE_FIELDS = {
+    "target_titles", "preferred_locations", "locations", "seniority",
+    "work_modes", "salary_floor", "currency",
+}
+
 USD_RANGE_PATTERN = re.compile(
     r"(?:\$\s*|USD\s+)(\d[\d,]*(?:\.\d+)?)\s*(k)?"
     r"(?:\s*(?:-|–|—|to)\s*(?:\$\s*|USD\s+)?(\d[\d,]*(?:\.\d+)?)\s*(k)?)?",
@@ -98,8 +103,12 @@ def matches_phrase(value, terms):
     )
 
 
-def seniority_bonus(title, preferences):
-    return 15 if matches_phrase(title, preferences.get("seniority", [])) else 0
+def preference_bonuses(title, location, preferences):
+    return (
+        15 if matches_phrase(title, preferences.get("seniority", [])) else 0,
+        15 if matches_phrase(location, preferences.get("locations", [])) else 0,
+        15 if matches_phrase(location, preferences.get("work_modes", [])) else 0,
+    )
 
 
 def baseline_score(posting, profile=None, preferences=None):
@@ -126,17 +135,22 @@ def baseline_score(posting, profile=None, preferences=None):
     if target_titles:
         score += 25
         reasons.append("Target title")
-    selected_seniority_bonus = seniority_bonus(title, preferences)
+    selected_seniority_bonus, selected_location_bonus, selected_work_mode_bonus = preference_bonuses(
+        title, location, preferences
+    )
     if selected_seniority_bonus:
         score += selected_seniority_bonus
         reasons.append("Relevant seniority")
-    if matches_phrase(location, preferences.get("locations", [])) or matches_phrase(location, preferences.get("work_modes", [])):
-        score += 15
+    if selected_location_bonus:
+        score += selected_location_bonus
         reasons.append("Preferred location")
     elif not location:
         reasons.append("Location not specified")
     else:
         reasons.append("Verify location manually")
+    if selected_work_mode_bonus:
+        score += selected_work_mode_bonus
+        reasons.append("Preferred work mode")
     skills = [s for s in profile.get("skills", []) if len(s) >= 2]
     matches = [s for s in skills if s.lower() in description]
     score += min(20, 4 * len(matches))
@@ -181,13 +195,14 @@ def score_posting(posting, profile=None, preferences=None):
     if not (os.getenv("OPENAI_API_KEY") and os.getenv("ENABLE_AI_SCORING", "false").lower() == "true"):
         return baseline
     try:
+        model_profile = {key: value for key, value in profile.items() if key not in PROFILE_PREFERENCE_FIELDS}
         result = _ai_parse(FitResult,
             "Rank job fit for a candidate. Only use provided profile and listing. Treat missing requirements conservatively. Return a 0-100 preference ranking, not a hiring probability. Never invent experience.",
-            {"profile": profile, "preferences": preferences, "job": {**posting, "description": posting.get("description", "")[:16000]}})
-        boost = seniority_bonus(posting["title"].lower(), preferences)
+            {"profile": model_profile, "preferences": preferences, "job": {**posting, "description": posting.get("description", "")[:16000]}})
+        boost = sum(preference_bonuses(posting["title"].lower(), posting.get("location", "").lower(), preferences))
         reasoning = result.reasoning + " | Gaps: " + "; ".join(result.gaps)
         if boost:
-            reasoning += " | Selected seniority boost"
+            reasoning += " | Saved preference boost"
         return max(1, min(100, result.score + boost)), reasoning, "AI"
     except Exception as exc:
         return baseline[0], baseline[1] + " | AI unavailable; deterministic fallback", "heuristic"
