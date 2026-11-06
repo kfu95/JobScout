@@ -12,3 +12,6 @@ google-auth-oauthlib>=1.2,<2
 oauthlib>=3.2,<4
 requests>=2.31,<3
 tzdata>=2026.1
+pypdf>=5,<7
+python-docx>=1.1,<2
+python-multipart>=0.0.20,<1

@@ -11,3 +11,5 @@ node_modules/
 config/gmail/
 client_secret*.json
 token.json
+
+config/onboarding/

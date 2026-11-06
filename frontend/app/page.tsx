@@ -1,4 +1,5 @@
 "use client";
+import Onboarding from "./onboarding";
 import { useCallback, useEffect, useState } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -65,6 +66,7 @@ export default function Dashboard() {
       ["Tracked boards",stats?.boards],["Open jobs",stats?.jobs],["Strong matches",stats?.strong_matches],
       ["Packets ready",stats?.prepared],["Approved",stats?.approved],["Reported sent",stats?.reported]
     ] as const).map(([label,n])=><div className="stat" key={label}><b>{n ?? "—"}</b><span>{label}</span></div>)}</div>
+    <Onboarding onSaved={async()=>{await reload(); if(selected) await selectJob(selected.id);}}/>
     <div className="columns">
       <section className="panel feed"><div className="sectionTitle"><h2>Job feed</h2><span>{jobs.length} shown</span></div>
         <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
@@ -92,12 +94,12 @@ export default function Dashboard() {
           <div className="row"><a className="button outline" href={`${BASE}/api/jobs/${selected.id}/resume.pdf`}>Download resume PDF</a>
             {selected.application_status==="prepared" && <button disabled={busy} onClick={()=>action(`/api/jobs/${selected.id}/decision`,{decision:"approve"})}>Approve materials</button>}
             {selected.application_status==="approved" && <button disabled={busy} onClick={()=>action(`/api/jobs/${selected.id}/reported`)}>I submitted (unverified)</button>}
-            {["submission_reported","confirmed","interview","rejected"].includes(selected.application_status) && <>
-              <button className="outline" disabled={busy} onClick={()=>statusUpdate("confirmed")}>Confirm with receipt</button>
-              <button className="outline" disabled={busy} onClick={()=>statusUpdate("interview")}>Interview</button>
-              <button className="outline" disabled={busy} onClick={()=>statusUpdate("rejected")}>Rejected</button>
-            </>}
           </div>
+        </div>}
+        {["submission_reported","confirmed","interview","rejected"].includes(selected.application_status) && <div className="row actions">
+          <button className="outline" disabled={busy} onClick={()=>statusUpdate("confirmed")}>Confirm with receipt</button>
+          <button className="outline" disabled={busy} onClick={()=>statusUpdate("interview")}>Interview</button>
+          <button className="outline" disabled={busy} onClick={()=>statusUpdate("rejected")}>Rejected</button>
         </div>}
         <h3>Original listing</h3><div className="description">{selected.description || "No description returned."}</div>
       </> : <div className="empty"><h2>Select a job</h2><p className="muted">Review the listing, see scoring evidence, and approve its application packet.</p></div>}</section>

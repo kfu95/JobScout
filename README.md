@@ -14,7 +14,7 @@ bash setup.sh
 
 Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
 
-`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates the user-restricted Gmail credential directory before starting Compose. The generated files are excluded from Git. **Update the profile with verified facts before preparing application packets.** Run `docker compose up -d --force-recreate api worker` after changing environment variables; the profile JSON itself is read on each scoring/preparation request.
+`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates user-restricted Gmail credential and onboarding data directories before starting Compose. The generated files are excluded from Git. Upload a resume and verify its extracted facts in the dashboard before preparing application packets. Run `docker compose up -d --force-recreate api worker` after changing environment variables; profile skills are read during scoring, and profile identity is read during packet preparation.
 
 ## Discover jobs
 
@@ -41,9 +41,9 @@ curl 'http://localhost:8000/api/jobs?min_score=80'
 
 The company above is **illustrative**; replace it with a verified board token.
 
-## Career-facts JSON
+## Profile JSON and first-use fact seed
 
-Edit `config/profile.json`. Add facts with stable IDs; the PDF generator uses those exact fact strings, not AI-invented achievements.
+Edit `config/profile.json` for identity, skills, and initial title, location, and annual USD salary defaults. Its `verified_experience` list is an optional one-time seed imported only when `config/onboarding/facts.json` is first created. After that, upload, edit, and verify career facts in the dashboard; later profile fact edits do not change the onboarding fact store. The PDF generator uses the verified onboarding facts exactly, not AI-invented achievements.
 
 ```json
 {
@@ -78,7 +78,7 @@ To generate AI-assisted packet drafts and optionally AI job-fit scoring:
 3. To turn on AI scoring for subsequently added/changed jobs, set `ENABLE_AI_SCORING=true` and run `docker compose up -d --force-recreate api worker`.
 4. `OPENAI_MODEL` defaults to `gpt-4o-mini` and can be changed to an available compatible model.
 
-Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile unless you have reviewed data handling requirements.
+Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile or onboarding facts unless you have reviewed data handling requirements.
 
 ## Review-before-submit workflow
 
@@ -93,14 +93,14 @@ Cost and access depend on your API account/model. The code uses structured outpu
 
 ## Included / not included
 
-**Included:** Automatic public Greenhouse / Lever / Ashby board discovery and collection; Remotive and optional USAJOBS aggregation; bounded Lever pagination; title/location/description normalization; exact normalized-URL deduplication; job-description versioning; two-successful-snapshot closure for ATS-board jobs; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; optional Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
+**Included:** PDF/DOCX resume import with verified-fact review; job preferences and immediate rescoring; automatic public Greenhouse / Lever / Ashby board discovery and collection; Remotive and optional USAJOBS aggregation; bounded Lever pagination; title/location/description normalization; exact normalized-URL deduplication; job-description versioning; two-successful-snapshot closure for ATS-board jobs; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; optional Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
 
 **Not yet integrated:** Semantic matching across different listing URLs; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
 
 ## Security and operations
 
 - Both HTTP ports are bound to `127.0.0.1` in `docker-compose.yml`. The API has **no authentication** and must not be publicly deployed as written.
-- Keep `.env` and `config/profile.json` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
+- Keep `.env`, `config/profile.json`, and `config/onboarding/` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
 - Postgres persists in the `pgdata` Docker volume. `docker compose down` keeps the volume; `docker compose down -v` destroys it.
 - Read-only ATS polling uses exact allowlisted HTTPS hosts and validated board slugs. No arbitrary URL fetch or application POST is performed.
 - Jobs with matching normalized listing URLs are deduplicated across sources. Different URLs for the same job may still appear separately.
@@ -151,6 +151,12 @@ Collection refreshes a directory of public Greenhouse, Lever, and Ashby boards w
 
 [Remotive's public API](https://github.com/remotive-com/remote-jobs-api) supplies remote software jobs, extending New York searches to eligible remote roles without a key. Listings link to Remotive and show its name as the provider. Its public feed is delayed 24 hours and is fetched at most once per six hours, including after failures. Its terms prohibit submitting these jobs to other job sites. [USAJOBS](https://developer.usajobs.gov/api-reference/get-api-search) supplies federal software roles. Request a free key at the [API request page](https://developer.usajobs.gov/apirequest/index), then set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`; the email must be the one used for the key. If either is missing, USAJOBS is skipped with a logged notice. No personal email is built in.
 
-`config/profile.json` supplies `target_titles`, `preferred_locations`, and optional annual `salary_floor` (USD). Jobs with missing location or salary remain eligible for review; salary filtering applies only where an annual maximum is recognizable. Results are deduplicated by source ID and normalized listing URL, although aggregator links may differ from an employer's direct URL. Aggregator listings are not automatically marked closed yet; verify availability on the linked listing. Directory rotation can take multiple days. Discovery does not use Gmail alerts.
+Saved dashboard preferences are the single source for discovery filtering and scoring. Until preferences are saved, `config/profile.json` supplies the initial `target_titles`, `preferred_locations`, and optional annual `salary_floor` (USD). Each collection run uses one preference snapshot. When locations are selected, a listing is eligible only if its location matches or it is remote and Remote is a selected work mode. Known mismatches already stored are hidden, not deleted; new mismatches are not stored. Listings with unknown salary remain eligible, and salary filtering applies only where an annual maximum is recognizable. Results are deduplicated by source ID and normalized listing URL, although aggregator links may differ from an employer's direct URL. Aggregator listings are not automatically marked closed yet; verify availability on the linked listing. Directory rotation can take multiple days. Discovery does not use Gmail alerts.
 
 Deferred: concurrent collection coordination across API and worker, more complete salary and remote eligibility parsing, improved cross-provider identity matching, and closing aggregator listings absent from complete feeds.
+
+### Resume and preferences
+
+Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported only when the onboarding fact store is first created. The source document is discarded after extraction. Facts and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
+
+Preferences affect stored job scores and visibility immediately. Target-title phrases and selected locations act as hard filters, with selected Remote work admitting remote listings outside those locations. Selected seniority and work-mode terms raise rankings when matched. A stated salary below the annual USD floor removes a match. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus provider-supplied annual USD salary maxima; it does not treat foreign currencies, stipends, bonuses, equity, nonannual rates, or unlabeled amounts as annual salary. Review compensation in the original listing.

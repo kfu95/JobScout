@@ -8,9 +8,17 @@ from app.collectors import collect_all, normalize, persist_snapshot
 from app.db import Base
 from app.discovery import refresh_directory
 from app.models import Board, Job, JobVersion
+from app.onboarding import Preferences, save_preferences
 from app.preferences import matches
 
-PREFS = {"titles": ["senior software engineer"], "locations": ["new york", "remote"], "salary_floor": 150000}
+PREFS = {
+    "target_titles": ["software engineer"],
+    "seniority": [],
+    "locations": ["new york"],
+    "work_modes": ["remote"],
+    "salary_floor": 150000,
+    "currency": "USD",
+}
 
 
 def run(coro):
@@ -38,6 +46,7 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
     assert requests[1].headers["authorization-key"] == "secret"
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
+    assert not matches({**remotive[0], "location": "Remote Germany", "remote_region": ""}, PREFS)
     assert matches({**usa[0], "title": "Staff Software Engineer", "salary_max": 180000}, PREFS)
     foreign_salary = remotive_posting({
         "id": 5, "company_name": "B", "title": "Senior Software Engineer", "candidate_required_location": "USA",
@@ -66,7 +75,7 @@ def test_ats_provider_contract_normalization():
         "workplaceType": "hybrid",
         "salaryRange": {"currency": "USD", "interval": "per-year-salary", "min": 100000, "max": 120000},
     })
-    assert lever["location"] == "San Francisco, New York"
+    assert lever["location"] == "San Francisco, New York, Hybrid"
     assert lever["salary_max"] == 120000
     assert matches({**lever, "salary_max": 180000}, PREFS)
     assert not matches(lever, PREFS)
@@ -79,18 +88,24 @@ def test_ats_provider_contract_normalization():
     assert lever_remote["location"] == "United States, Remote"
     assert matches(lever_remote, PREFS)
 
+    lever_onsite = normalize("lever", {
+        "id": "lever-3", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-3",
+        "categories": {"location": "Boston"}, "workplaceType": "on-site",
+    })
+    assert lever_onsite["location"] == "Boston, Onsite"
+
     ashby_hybrid = normalize("ashby", {
         "jobUrl": "https://example.com/ashby-1", "title": "Staff Software Engineer", "location": "Boston",
         "isRemote": True, "workplaceType": "Hybrid", "descriptionPlain": "",
     })
-    assert ashby_hybrid["location"] == "Boston"
+    assert ashby_hybrid["location"] == "Boston / Hybrid"
     assert not matches(ashby_hybrid, PREFS)
 
     ashby_remote = normalize("ashby", {
         "jobUrl": "https://example.com/ashby-remote", "title": "Staff Software Engineer", "location": "Boston",
         "isRemote": True, "workplaceType": "Remote", "descriptionPlain": "",
     })
-    assert ashby_remote["location"] == "Boston, Remote"
+    assert ashby_remote["location"] == "Boston / Remote"
     assert matches(ashby_remote, PREFS)
 
     ashby = normalize("ashby", {
@@ -101,13 +116,13 @@ def test_ats_provider_contract_normalization():
             "minValue": 81000, "maxValue": 87000,
         }]},
     })
-    assert ashby["location"] == "San Francisco, New York"
+    assert ashby["location"] == "San Francisco, New York / OnSite"
     assert ashby["salary_max"] == 87000
     assert matches({**ashby, "salary_max": 180000}, PREFS)
     assert not matches(ashby, PREFS)
 
     assert normalize("lever", {
-        "id": "lever-3", "text": "Engineer", "applyUrl": "https://example.com/lever-3",
+        "id": "lever-4", "text": "Engineer", "applyUrl": "https://example.com/lever-4",
         "categories": {}, "salaryRange": {"currency": "EUR", "interval": "per-year-salary", "max": 180000},
     })["salary_max"] is None
 
@@ -116,11 +131,11 @@ def test_full_locations_match_before_bounded_persistence():
     location_names = [f"Region {index} {'x' * 20}" for index in range(30)] + ["New York"]
     postings = [
         normalize("lever", {
-            "id": "lever-long", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-long",
+            "id": "lever-long", "text": "Senior Software Engineer", "applyUrl": "https://example.com/lever-long",
             "categories": {"allLocations": location_names}, "workplaceType": "hybrid",
         }),
         normalize("ashby", {
-            "jobUrl": "https://example.com/ashby-long", "title": "Staff Software Engineer",
+            "jobUrl": "https://example.com/ashby-long", "title": "Senior Software Engineer",
             "location": location_names[0],
             "secondaryLocations": [{"location": location} for location in location_names[1:]],
             "workplaceType": "OnSite", "descriptionPlain": "",
@@ -128,7 +143,7 @@ def test_full_locations_match_before_bounded_persistence():
         usajobs_posting({
             "MatchedObjectId": "usa-long",
             "MatchedObjectDescriptor": {
-                "PositionTitle": "Staff Software Engineer", "OrganizationName": "Agency",
+                "PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency",
                 "PositionURI": "https://usajobs.gov/job/long",
                 "PositionLocation": [{"LocationName": location} for location in location_names],
             },
@@ -193,17 +208,64 @@ def test_filtered_observation_does_not_close_live_job():
         db.commit()
         posting = {"external_id": "1", "company": "Example", "title": "Senior Software Engineer", "location": "New York", "description": "", "apply_url": "https://example.com/job/1"}
         persist_snapshot(db, board, [posting])
-        moved = {**posting, "location": "Boston"}
+        moved = {**posting, "location": "Boston", "salary_max": 120000}
+        unseen = {**moved, "external_id": "2", "apply_url": "https://example.com/job/2"}
         assert not matches(moved, PREFS)
         for _ in range(2):
-            persist_snapshot(
-                db,
-                board,
-                [moved] if matches(moved, PREFS) else [],
-                observed_external_ids={moved["external_id"]},
-            )
+            persist_snapshot(db, board, [moved, unseen], preferences=PREFS)
         job = db.scalar(select(Job))
-        assert job.is_open and job.missing_count == 0
+        assert len(db.scalars(select(Job)).all()) == 1
+        assert job.is_open and job.missing_count == 0 and job.score == 0
+        assert job.location == "Boston"
+        assert "Annual USD salary maximum: $120,000" in job.description
+
+
+def test_filtered_canonical_duplicate_is_reconciled():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        posting = {"external_id": "1", "title": "Senior Software Engineer", "location": "New York", "description": "", "apply_url": "https://example.com/job/1"}
+        persist_snapshot(db, board, [posting], preferences=PREFS)
+        store_aggregator(db, "remotive", [{
+            **posting,
+            "external_id": "remote-1",
+            "company": "Example",
+            "location": "Remote Germany",
+            "remote_region": "Germany",
+            "salary_max": 120000,
+        }], PREFS)
+        job = db.scalar(select(Job))
+        assert len(db.scalars(select(Job)).all()) == 1
+        assert job.is_open and job.score > 0
+        assert job.location == "New York"
+        assert "Annual USD salary maximum" not in job.description
+
+
+def test_location_eligibility_matches_stored_and_new_jobs():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        board = Board(company="Example", provider="greenhouse", slug="example")
+        db.add(board)
+        db.commit()
+        existing = {
+            "external_id": "existing", "title": "Software Engineer", "location": "Boston",
+            "description": "", "apply_url": "https://example.com/existing",
+        }
+        persist_snapshot(db, board, [existing], preferences={**PREFS, "locations": [], "salary_floor": None})
+        persist_snapshot(db, board, [
+            existing,
+            {**existing, "external_id": "new-onsite", "apply_url": "https://example.com/new-onsite"},
+            {**existing, "external_id": "new-remote", "location": "Boston, Remote", "apply_url": "https://example.com/new-remote"},
+        ], preferences={**PREFS, "salary_floor": None})
+
+        jobs = {job.external_id: job for job in db.scalars(select(Job)).all()}
+        assert jobs["existing"].score == 0
+        assert "new-onsite" not in jobs
+        assert jobs["new-remote"].score > 0
 
 
 def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
@@ -213,6 +275,11 @@ def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
         board = Board(company="Example", provider="greenhouse", slug="example")
         db.add(board)
         db.commit()
+        save_preferences(Preferences(
+            target_titles=["staff software engineer"],
+            locations=["new york"],
+            salary_floor=150000,
+        ))
         posting = {"external_id": "1", "company": "Example", "title": "Staff Software Engineer", "location": "New York", "description": "$100,000 annual benefit coverage", "apply_url": "https://example.com/job/1"}
 
         async def no_directory(_db, _client):
@@ -227,7 +294,6 @@ def test_ats_description_amount_is_not_treated_as_salary(monkeypatch):
         monkeypatch.setattr("app.discovery.refresh_directory", no_directory)
         monkeypatch.setattr("app.aggregators.collect_aggregators", no_aggregators)
         monkeypatch.setattr("app.collectors.fetch_board", one_posting)
-        monkeypatch.setattr("app.preferences.discovery_preferences", lambda: PREFS)
         run(collect_all(db))
         assert db.scalar(select(Job)) is not None
 
