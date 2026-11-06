@@ -3,6 +3,8 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
+JOB_LOCATION_MAX_LENGTH = 500
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -23,7 +25,7 @@ class Job(Base):
     board_id: Mapped[int] = mapped_column(ForeignKey("boards.id"), index=True)
     external_id: Mapped[str] = mapped_column(String(500))
     title: Mapped[str] = mapped_column(String(500))
-    location: Mapped[str] = mapped_column(String(500), default="")
+    location: Mapped[str] = mapped_column(String(JOB_LOCATION_MAX_LENGTH), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     apply_url: Mapped[str] = mapped_column(Text)
     hash: Mapped[str] = mapped_column(String(64))
@@ -42,7 +44,7 @@ class JobVersion(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
     hash: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(500))
-    location: Mapped[str] = mapped_column(String(500))
+    location: Mapped[str] = mapped_column(String(JOB_LOCATION_MAX_LENGTH))
     description: Mapped[str] = mapped_column(Text)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -89,3 +91,9 @@ class GmailSyncState(Base):
     __tablename__ = "gmail_sync_state"
     id: Mapped[int] = mapped_column(primary_key=True)
     history_id: Mapped[str] = mapped_column(String(255))
+
+class DiscoveryState(Base):
+    __tablename__ = "discovery_state"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

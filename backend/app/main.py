@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -69,8 +69,11 @@ def health():
     return {"ok": True, "review_before_submit": True}
 
 @app.get("/api/boards")
-def list_boards(db: Session = Depends(get_db)):
-    return jsonable_encoder(db.scalars(select(Board).order_by(Board.company)).all())
+def list_boards(limit: int | None = Query(None, ge=1, le=500), db: Session = Depends(get_db)):
+    query = select(Board).order_by(Board.company)
+    if limit is not None:
+        query = query.limit(limit)
+    return jsonable_encoder(db.scalars(query).all())
 
 @app.post("/api/boards")
 def add_board(payload: BoardIn, db: Session = Depends(get_db)):
