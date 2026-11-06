@@ -83,14 +83,14 @@ def test_ats_provider_contract_normalization():
         "jobUrl": "https://example.com/ashby-1", "title": "Staff Software Engineer", "location": "Boston",
         "isRemote": True, "workplaceType": "Hybrid", "descriptionPlain": "",
     })
-    assert ashby_hybrid["location"] == "Boston"
+    assert ashby_hybrid["location"] == "Boston / Hybrid"
     assert not matches(ashby_hybrid, PREFS)
 
     ashby_remote = normalize("ashby", {
         "jobUrl": "https://example.com/ashby-remote", "title": "Staff Software Engineer", "location": "Boston",
         "isRemote": True, "workplaceType": "Remote", "descriptionPlain": "",
     })
-    assert ashby_remote["location"] == "Boston, Remote"
+    assert ashby_remote["location"] == "Boston / Remote"
     assert matches(ashby_remote, PREFS)
 
     ashby = normalize("ashby", {
@@ -101,7 +101,7 @@ def test_ats_provider_contract_normalization():
             "minValue": 81000, "maxValue": 87000,
         }]},
     })
-    assert ashby["location"] == "San Francisco, New York"
+    assert ashby["location"] == "San Francisco, New York / OnSite"
     assert ashby["salary_max"] == 87000
     assert matches({**ashby, "salary_max": 180000}, PREFS)
     assert not matches(ashby, PREFS)
@@ -116,11 +116,11 @@ def test_full_locations_match_before_bounded_persistence():
     location_names = [f"Region {index} {'x' * 20}" for index in range(30)] + ["New York"]
     postings = [
         normalize("lever", {
-            "id": "lever-long", "text": "Staff Software Engineer", "applyUrl": "https://example.com/lever-long",
+            "id": "lever-long", "text": "Senior Software Engineer", "applyUrl": "https://example.com/lever-long",
             "categories": {"allLocations": location_names}, "workplaceType": "hybrid",
         }),
         normalize("ashby", {
-            "jobUrl": "https://example.com/ashby-long", "title": "Staff Software Engineer",
+            "jobUrl": "https://example.com/ashby-long", "title": "Senior Software Engineer",
             "location": location_names[0],
             "secondaryLocations": [{"location": location} for location in location_names[1:]],
             "workplaceType": "OnSite", "descriptionPlain": "",
@@ -128,7 +128,7 @@ def test_full_locations_match_before_bounded_persistence():
         usajobs_posting({
             "MatchedObjectId": "usa-long",
             "MatchedObjectDescriptor": {
-                "PositionTitle": "Staff Software Engineer", "OrganizationName": "Agency",
+                "PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency",
                 "PositionURI": "https://usajobs.gov/job/long",
                 "PositionLocation": [{"LocationName": location} for location in location_names],
             },

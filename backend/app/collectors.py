@@ -120,13 +120,16 @@ def normalize(provider, item):
         if salaries:
             salary_text = "\n".join(f"Annual USD salary: {salary}" for salary in salaries)
             description = f"{description}\n{salary_text}".strip()
+        location = normalized_location(
+            [item.get("location"), *[location.get("location") for location in item.get("secondaryLocations") or []]],
+        )
+        workplace_type = item.get("workplaceType", "")
+        if workplace_type in {"OnSite", "Remote", "Hybrid"}:
+            location = " / ".join(value for value in (location, workplace_type) if value)
         return {
             "external_id": str(item.get("id") or item.get("jobUrl") or item["applyUrl"]),
             "title": item.get("title", ""),
-            "location": normalized_location(
-                [item.get("location"), *[location.get("location") for location in item.get("secondaryLocations") or []]],
-                item.get("workplaceType"),
-            ),
+            "location": location,
             "description": description,
             "apply_url": item.get("applyUrl") or item.get("jobUrl") or "",
             "salary_max": positive_max(annual_usd_salary),
