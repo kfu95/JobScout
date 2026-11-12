@@ -41,6 +41,7 @@ export default function Dashboard() {
   const reload = useCallback(async()=>{await Promise.all([reloadJobs(),reloadOverview()]);},[reloadJobs,reloadOverview]);
   useEffect(()=>{reloadJobs().catch(e=>setNotice(e.message));},[reloadJobs]);
   useEffect(()=>{reloadOverview().catch(e=>setNotice(e.message));},[reloadOverview]);
+  useEffect(()=>{const id = new URLSearchParams(window.location.search).get("job"); if(id && /^\d+$/.test(id)) selectJob(Number(id));},[]);
   async function selectJob(id:number){try{setSelected(await api<Job>(`/api/jobs/${id}`));}catch(e){setNotice(String(e));}}
   async function action(path:string,body?:object) {
     setBusy(true);setNotice("");
@@ -60,7 +61,8 @@ export default function Dashboard() {
   }
   return <main className="shell">
     <header><div><p className="eyebrow">PERSONAL JOB SEARCH</p><h1>Job Agent</h1><p className="muted">Discover, match, prepare. You always submit.</p></div>
-      <button disabled={busy} onClick={()=>action("/api/collect")}>Run collectors now</button></header>
+      <div className="row"><button disabled={busy} onClick={()=>action("/api/digest/test")}>Send test digest</button>
+      <button disabled={busy} onClick={()=>action("/api/collect")}>Run collectors now</button></div></header>
     {notice && <div role="status" className="notice">{notice}</div>}
     <div className="stats">{([
       ["Tracked boards",stats?.boards],["Open jobs",stats?.jobs],["Strong matches",stats?.strong_matches],
