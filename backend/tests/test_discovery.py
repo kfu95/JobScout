@@ -338,3 +338,96 @@ def test_public_board_endpoints_and_retry_after(monkeypatch):
     posts = run(exercise())
     assert [len(page) for page in posts] == [1, 1, 1]
     assert 3 in waits
+
+
+def test_new_aggregator_responses(monkeypatch):
+    from app.aggregators import fetch_adzuna, fetch_remoteok
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "remoteok.com":
+            return httpx.Response(200, json=[{"legal": "terms"}, {"id": 7, "company": "Example", "position": "Software Engineer", "location": "USA", "description": "<p>Python</p>", "url": "https://remoteok.com/remote-jobs/7", "apply_url": "https://example.com/apply"}])
+        return httpx.Response(200, json={"results": [{"id": "8", "company": {"display_name": "Example"}, "title": "Software Engineer", "location": {"display_name": "New York"}, "description": "Snippet", "redirect_url": "https://www.adzuna.com/land/8"}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_remoteok(client), await fetch_adzuna(client, "id", "key")
+
+    remote, adzuna = run(exercise())
+    assert remote[0]["apply_url"] == "https://remoteok.com/remote-jobs/7"
+    assert remote[0]["description"] == "Python"
+    assert adzuna[0]["location"] == "New York"
+    assert adzuna[0]["apply_url"] == "https://www.adzuna.com/land/8"
+    assert requests[1].url.params["app_id"] == "id"
+    assert requests[1].url.params["app_key"] == "key"
+
+
+def test_hackernews_only_collects_top_level_hiring_comments(monkeypatch):
+    from app.aggregators import fetch_hackernews
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+
+    def handler(request):
+        if request.url.path.endswith("search_by_date"):
+            return httpx.Response(200, json={"hits": [{"objectID": "10", "title": "Ask HN: Who is hiring? (November 2026)"}]})
+        return httpx.Response(200, json={"children": [{"id": 11, "text": "Acme | Software Engineer | Remote<p>Python</p>", "children": [{"id": 12, "text": "reply"}]}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_hackernews(client)
+
+    postings = run(exercise())
+    assert len(postings) == 1
+    assert postings[0]["company"] == "Acme"
+    assert postings[0]["title"] == "Acme | Software Engineer | Remote"
+    assert postings[0]["apply_url"] == "https://news.ycombinator.com/item?id=11"
+
+
+def test_adzuna_log_redacts_credentials(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    logging.getLogger("httpx").info("HTTP Request: %s", "https://api.adzuna.com/?app_id=private-id&app_key=private-key")
+    assert "private-id" not in caplog.text
+    assert "private-key" not in caplog.text
+    assert "Adzuna HTTP request completed" in caplog.text
+
+
+def test_adzuna_missing_credentials_skip_and_do_not_request(monkeypatch, caplog):
+    monkeypatch.delenv("ADZUNA_APP_ID", raising=False)
+    monkeypatch.delenv("ADZUNA_APP_KEY", raising=False)
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "remotive.com":
+            return httpx.Response(200, json={"jobs": []})
+        if request.url.host == "remoteok.com":
+            return httpx.Response(200, json=[{"legal": "terms"}])
+        return httpx.Response(200, json={"hits": [{"objectID": "10", "title": "Ask HN: Who is hiring?"}]} if request.url.path.endswith("search_by_date") else {"children": []})
+
+    async def exercise(db):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await collect_aggregators(db, client, PREFS)
+
+    with Session(engine) as db:
+        result = run(exercise(db))
+    assert any(row.get("provider") == "adzuna" and row.get("skipped") for row in result)
+    assert "Skipping Adzuna" in caplog.text
+    assert all(request.url.host != "api.adzuna.com" for request in requests)

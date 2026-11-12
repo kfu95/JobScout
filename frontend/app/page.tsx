@@ -74,13 +74,14 @@ export default function Dashboard() {
         <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
           <label>Min score <select value={minScore} onChange={e=>setMinScore(Number(e.target.value))}><option value="0">All</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option></select></label></div>
         <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Run collection to discover jobs.</p>}
-          {jobs.map(j=><button className={`job ${selected?.id===j.id?"chosen":""}`} key={j.id} onClick={()=>selectJob(j.id)}>
+          {jobs.map(j=><div key={j.id}><button className={`job ${selected?.id===j.id?"chosen":""}`} onClick={()=>selectJob(j.id)}>
             <span className="jobHead"><b>{j.title}</b><span className="score">{j.score}</span></span>
-            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
-          </button>)}</div></section>
+            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider === "remoteok" ? "Remote OK" : j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
+          </button>{j.provider === "adzuna" && <a href="https://www.adzuna.com/" target="_blank" rel="noopener noreferrer" style={{display:"inline-block", minWidth:116, minHeight:23}}>Adzuna</a>}</div>)}</div></section>
       <section className="panel detail">{selected ? <>
         <div className="sectionTitle"><h2>{selected.title}</h2><span className="score">{selected.score}</span></div>
         <p>{selected.company} · {selected.location}</p>
+        {selected.provider === "adzuna" && <a href="https://www.adzuna.com/" target="_blank" rel="noopener noreferrer" style={{display:"inline-block", minWidth:116, minHeight:23}}>Adzuna</a>}
         <p className="muted">{selected.score_reason || "No score reasoning yet"}</p>
         <div className="row actions">
           <a className="button outline" href={safeLink(selected.apply_url)} target="_blank" rel="noopener noreferrer">Open job listing</a>
