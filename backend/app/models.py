@@ -3,6 +3,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
+JOB_EXTERNAL_ID_MAX_LENGTH = 500
 JOB_LOCATION_MAX_LENGTH = 500
 
 def now():
@@ -23,7 +24,7 @@ class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(primary_key=True)
     board_id: Mapped[int] = mapped_column(ForeignKey("boards.id"), index=True)
-    external_id: Mapped[str] = mapped_column(String(500))
+    external_id: Mapped[str] = mapped_column(String(JOB_EXTERNAL_ID_MAX_LENGTH))
     title: Mapped[str] = mapped_column(String(500))
     location: Mapped[str] = mapped_column(String(JOB_LOCATION_MAX_LENGTH), default="")
     description: Mapped[str] = mapped_column(Text, default="")

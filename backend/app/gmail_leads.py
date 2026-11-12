@@ -4,26 +4,36 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .models import JOB_EXTERNAL_ID_MAX_LENGTH
+
 
 class Links(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.links = []
         self.current = None
+        self.context = None
 
     def handle_starttag(self, tag, attrs):
         if tag.lower() == 'a':
             attrs = dict(attrs)
+            self.context = None
             self.current = [attrs.get('href', ''), [], attrs.get('title', '')]
 
     def handle_data(self, data):
+        data = ' '.join(data.split())
+        if not data:
+            return
         if self.current is not None:
             self.current[1].append(data)
+        elif self.context is not None and len(self.context[2]) < 2:
+            self.context[2].append(data)
 
     def handle_endtag(self, tag):
         if tag.lower() == 'a' and self.current is not None:
             url, pieces, title = self.current
-            self.links.append((url, ' '.join(' '.join(pieces).split()) or title))
+            self.context = [url, ' '.join(pieces) or title, []]
+            self.links.append(self.context)
             self.current = None
 
 
@@ -80,18 +90,34 @@ def message_links(payload):
             if mime == 'text/html':
                 parser = Links()
                 parser.feed(content)
-                links.extend(parser.links)
+                for url, text, context in parser.links:
+                    links.append((url, text))
+                    if context:
+                        links.append((url, ' | '.join((text, *context))))
             else:
-                for line in content.splitlines():
-                    for url in re.findall(r'https?://[^\s<>"\']+', line):
-                        links.append((url.rstrip('.,);'), line.replace(url, '').strip(' -|:')))
+                for block in re.split(r'\n\s*\n', content):
+                    lines = [' '.join(line.split()) for line in block.splitlines() if line.strip()]
+                    block_urls = re.findall(r'https?://[^\s<>"\']+', block)
+                    context = ' | '.join(
+                        re.sub(r'https?://[^\s<>"\']+', '', line).strip(' -|:.,);')
+                        for line in lines
+                        if re.sub(r'https?://[^\s<>"\']+', '', line).strip(' -|:.,);')
+                    )
+                    if len(block_urls) != 1:
+                        context = ''
+                    for line in lines:
+                        for url in re.findall(r'https?://[^\s<>"\']+', line):
+                            text = line.replace(url, '').strip(' -|:')
+                            links.append((url.rstrip('.,);'), text))
+                            if context and context != text:
+                                links.append((url.rstrip('.,);'), context))
         for child in part.get('parts', []):
             visit(child)
     visit(payload)
     results = {}
     for url, text in links:
         canonical = canonical_url(url)
-        if not canonical:
+        if not canonical or len(canonical) > JOB_EXTERNAL_ID_MAX_LENGTH:
             continue
         fields = re.split(r'\s+(?:at|\|)\s+', text, maxsplit=2, flags=re.I)
         title = fields[0].strip()[:500]

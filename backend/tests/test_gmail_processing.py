@@ -67,6 +67,44 @@ def test_alert_samples_and_wrappers():
     assert canonical_url('https://www.glassdoor.com/job-listing/other-JL987.htm') == canonical_url('https://www.glassdoor.com/job-listing/engineer-JL987.htm')
 
 
+def test_alert_card_metadata_from_html_and_plaintext():
+    linkedin_payload = {
+        'mimeType': 'text/html',
+        'body': {'data': encoded(
+            '<a href="https://www.linkedin.com/jobs/view/12345">Senior Engineer</a>'
+            '<div>Acme</div><div>New York</div>'
+        )},
+    }
+    builtin_payload = {
+        'mimeType': 'text/plain',
+        'body': {'data': encoded(
+            'Software Engineer\nAcme\nRemote\nhttps://builtin.com/job/software-engineer/6789'
+        )},
+    }
+    assert message_links(linkedin_payload)[0] == {
+        'external_id': 'https://www.linkedin.com/jobs/view/12345',
+        'title': 'Senior Engineer',
+        'company': 'Acme',
+        'location': 'New York',
+        'description': '',
+        'apply_url': 'https://www.linkedin.com/jobs/view/12345',
+    }
+    assert message_links(builtin_payload)[0] == {
+        'external_id': 'https://builtin.com/job/software-engineer/6789',
+        'title': 'Software Engineer',
+        'company': 'Acme',
+        'location': 'Remote',
+        'description': '',
+        'apply_url': 'https://builtin.com/job/software-engineer/6789',
+    }
+
+
+def test_alert_rejects_external_id_over_database_limit():
+    url = f'https://builtin.com/job/{"x" * 600}1'
+    payload = {'mimeType': 'text/html', 'body': {'data': encoded(f'<a href="{url}">Senior Engineer</a>')}}
+    assert message_links(payload) == []
+
+
 def test_processing_deduplicates_and_skips_spam(gmail_setup, monkeypatch):
     _, db = gmail_setup
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
