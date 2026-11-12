@@ -14,6 +14,7 @@ from .scoring import baseline_score, prepare_packet, load_profile
 from .onboarding import Fact, Preferences, load_facts, locked_facts, save_preferences, update_stored_fact, upload_resume, preference_score_lock
 from .preferences import load_preferences
 from .pdf import packet_pdf
+from .digest import send_digest
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
 
 @asynccontextmanager
@@ -154,6 +155,13 @@ def add_board(payload: BoardIn, db: Session = Depends(get_db)):
 async def collect_now(db: Session = Depends(get_db)):
     # Explicit manual trigger; the separate worker also polls periodically.
     return {"results": await collect_all(db)}
+
+@app.post("/api/digest/test")
+def test_digest(db: Session = Depends(get_db)):
+    result = send_digest(db, test=True)
+    if result["status"] == "unconfigured":
+        raise HTTPException(503, "SMTP settings are incomplete")
+    return result
 
 @app.get("/api/jobs")
 def list_jobs(q: str = "", min_score: int = 0, open_only: bool = True, limit: int = 200, db: Session = Depends(get_db)):
