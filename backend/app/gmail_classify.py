@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from email.utils import parseaddr
 from typing import Literal
 
 from pydantic import BaseModel
@@ -17,7 +18,6 @@ class Classification(BaseModel):
 
 def classify(subject, snippet, sender):
     text = f'{subject} {snippet}'.lower()
-    sender = sender.lower()
     rules = [
         ('rejection', r'\b(unfortunately|not moving forward|not selected|other candidates|unable to offer)\b'),
         ('interview_invite', r'\b(interview|schedule a call|schedule a conversation)\b'),
@@ -25,10 +25,15 @@ def classify(subject, snippet, sender):
         ('job_alert', r'\b(job alert|jobs? (?:for you|you may be interested in|matching|recommended)|new jobs)\b'),
         ('recruiter_outreach', r'\b(recruiter|reach out|reaching out|opportunity to discuss)\b'),
     ]
+    subject_matches = [category for category, pattern in rules if re.search(pattern, subject.lower())]
+    if len(subject_matches) == 1:
+        return subject_matches[0]
     matches = [category for category, pattern in rules if re.search(pattern, text)]
     if len(matches) == 1:
         return matches[0]
-    if not matches and any(domain in sender for domain in ('linkedin.com', 'builtin.com', 'glassdoor.com', 'indeed.com')) and re.search(r'\bjobs?\b', text):
+    sender_domain = parseaddr(sender)[1].rpartition('@')[2].lower().rstrip('.')
+    providers = ('linkedin.com', 'builtin.com', 'glassdoor.com', 'indeed.com')
+    if not matches and any(sender_domain == domain or sender_domain.endswith(f'.{domain}') for domain in providers) and re.search(r'\bjobs?\b', text):
         return 'job_alert'
     fallback = matches[0] if matches else 'other'
     if os.getenv('OPENAI_API_KEY') and os.getenv('GMAIL_AI_CLASSIFY', 'false').lower() == 'true':

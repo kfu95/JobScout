@@ -14,7 +14,7 @@ bash setup.sh
 
 The script creates a random local database password in `.env`, builds the containers, and opens the dashboard where supported. Otherwise open http://localhost:3000. The first build may take several minutes. Upload a PDF or DOCX resume, review the extracted facts, and save your job preferences. You can configure optional integrations in the same screen. The API is at http://localhost:8000/docs.
 
-The worker continues polling while Docker is running, including after a reboot if Docker starts automatically. A morning digest can only run while Docker is running. Gmail job-alert discovery is not yet available. The Gmail integration currently imports filtered application messages, not job alerts. Department and years of experience are saved but do not yet affect matching.
+The worker continues polling while Docker is running, including after a reboot if Docker starts automatically. A morning digest can only run while Docker is running. Gmail imports filtered application messages and discovers jobs from alerts. Department and years of experience are saved but do not yet affect matching.
 
 ## Integrations and advanced configuration
 

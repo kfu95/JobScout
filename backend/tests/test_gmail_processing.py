@@ -28,6 +28,9 @@ def test_classification_and_ai_fallback(monkeypatch):
         ('Hello', 'other'),
     ]:
         assert classify(subject, '', '') == expected
+    assert classify('New jobs for you', 'Get interview tips', '') == 'job_alert'
+    assert classify('Jobs', '', 'LinkedIn.com Support <offers@evil.test>') == 'other'
+    assert classify('Jobs', '', 'alerts@mail.linkedin.com') == 'job_alert'
     calls = []
     monkeypatch.setenv('OPENAI_API_KEY', 'test')
     monkeypatch.setattr('app.gmail_classify._ai_parse', lambda *args: calls.append(args) or Classification(category='job_alert'))
@@ -65,6 +68,25 @@ def test_alert_samples_and_wrappers():
         assert linked['apply_url'] == 'https://www.linkedin.com/jobs/view/12345'
     assert canonical_url('https://builtin.com/job/other/6789') == canonical_url(builtin)
     assert canonical_url('https://www.glassdoor.com/job-listing/other-JL987.htm') == canonical_url('https://www.glassdoor.com/job-listing/engineer-JL987.htm')
+
+
+def test_alert_ignores_valueless_anchor_attributes():
+    payload = {
+        'mimeType': 'text/html',
+        'body': {'data': encoded(
+            '<a href>Senior Engineer</a>'
+            '<a href="https://www.linkedin.com/jobs/view/12345" title></a>'
+            '<a href="https://www.linkedin.com/jobs/view/67890">Staff Engineer at Acme | Remote</a>'
+        )},
+    }
+    assert message_links(payload) == [{
+        'external_id': 'https://www.linkedin.com/jobs/view/67890',
+        'title': 'Staff Engineer',
+        'company': 'Acme',
+        'location': 'Remote',
+        'description': '',
+        'apply_url': 'https://www.linkedin.com/jobs/view/67890',
+    }]
 
 
 def test_alert_card_metadata_from_html_and_plaintext():

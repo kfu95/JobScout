@@ -18,7 +18,7 @@ class Links(HTMLParser):
         if tag.lower() == 'a':
             attrs = dict(attrs)
             self.context = None
-            self.current = [attrs.get('href', ''), [], attrs.get('title', '')]
+            self.current = [attrs.get('href') or '', [], attrs.get('title') or '']
 
     def handle_data(self, data):
         data = ' '.join(data.split())
