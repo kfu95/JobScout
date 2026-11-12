@@ -27,16 +27,16 @@ if [[ ! -f .env ]]; then
 else
   echo 'Using existing .env (not overwriting credentials).'
 fi
-if [[ ! -f config/profile.json ]]; then
-  cp config/profile.example.json config/profile.json
-  chmod 600 config/profile.json
-  echo 'Created config/profile.json; update identity and skills there if needed.'
-fi
-mkdir -p config/gmail config/onboarding
-chmod 700 config/gmail config/onboarding
 
 docker compose up --build -d
 printf '\nDashboard: http://localhost:3000\nAPI docs:  http://localhost:8000/docs\n\n'
 echo 'Next: upload a resume, verify its facts, set preferences, and run job collection in the dashboard.'
+if [[ "${OSTYPE:-}" == darwin* ]]; then
+  open http://localhost:3000 || echo 'Open http://localhost:3000 in your browser.'
+elif command -v xdg-open >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  xdg-open http://localhost:3000 >/dev/null 2>&1 || echo 'Open http://localhost:3000 in your browser.'
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -Command 'Start-Process http://localhost:3000' || echo 'Open http://localhost:3000 in your browser.'
+fi
 echo 'To stop: docker compose down'
 echo 'To view logs: docker compose logs -f api worker web'

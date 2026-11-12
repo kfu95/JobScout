@@ -96,3 +96,15 @@ def test_digest_attributes_aggregator_listings(setup):
     assert "min-width:116px;min-height:23px" in html_body
     assert 'href="https://remoteok.com/remote-jobs/2"' in html_body
     assert "https://remoteok.com/remote-jobs/2" in plain_body
+
+
+def test_dashboard_smtp_settings_are_used(setup):
+    from app.settings import IntegrationSettings, save_settings
+
+    save_settings(IntegrationSettings(
+        smtp_host="smtp.example.com", smtp_port="587", smtp_username="user",
+        smtp_password="secret", smtp_from="sender@example.com", smtp_to="dashboard@example.com",
+    ))
+    assert send_digest(setup, test=True, transport=Mail)["status"] == "sent"
+    assert Mail.messages[-1]["To"] == "dashboard@example.com"
+    assert Mail.messages[-1]["From"] == "sender@example.com"

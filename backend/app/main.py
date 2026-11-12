@@ -13,6 +13,7 @@ from .collectors import ALLOWED_PROVIDERS, SLUG_PATTERN, collect_all
 from .scoring import baseline_score, prepare_packet, load_profile
 from .onboarding import Fact, Preferences, load_facts, locked_facts, save_preferences, update_stored_fact, upload_resume, preference_score_lock
 from .preferences import load_preferences
+from .settings import IntegrationSettings, load_settings, save_settings
 from .pdf import packet_pdf
 from .digest import send_digest
 from .gmail_api import callback_router as gmail_callback_router, router as gmail_router
@@ -83,6 +84,18 @@ def job_for_update(db, job_id):
 def onboarding():
     profile = load_profile()
     return {"facts": load_facts(profile), "preferences": load_preferences(profile)}
+
+@app.get("/api/onboarding/integrations")
+def integration_status():
+    return {key: bool(value) for key, value in load_settings().items()}
+
+@app.put("/api/onboarding/integrations")
+def update_integrations(settings: IntegrationSettings):
+    try:
+        save_settings(settings)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"saved": True}
 
 @app.post("/api/onboarding/resume")
 async def resume_upload(file: UploadFile = File(...)):

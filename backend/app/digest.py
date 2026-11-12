@@ -9,16 +9,17 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 
 from .models import Board, DigestJob, Job
+from .settings import setting
 
 log = logging.getLogger(__name__)
 
 
 def send_digest(db, test=False, transport=None):
-    host = os.getenv("SMTP_HOST", "")
-    username = os.getenv("SMTP_USERNAME", "")
-    password = os.getenv("SMTP_PASSWORD", "")
-    recipient = os.getenv("DIGEST_TO", "")
-    sender = os.getenv("SMTP_FROM", "") or username
+    host = setting("SMTP_HOST")
+    username = setting("SMTP_USERNAME")
+    password = setting("SMTP_PASSWORD")
+    recipient = setting("SMTP_TO") or os.getenv("DIGEST_TO", "")
+    sender = setting("SMTP_FROM") or username
     if not all((host, username, password, recipient, sender)):
         log.info("Digest skipped: SMTP settings are incomplete")
         return {"status": "unconfigured", "count": 0}
@@ -60,7 +61,7 @@ def send_digest(db, test=False, transport=None):
     message.set_content("\n".join(lines))
     message.add_alternative("".join(html_lines), subtype="html")
     factory = transport or smtplib.SMTP
-    with factory(host, int(os.getenv("SMTP_PORT", "587")), timeout=30) as smtp:
+    with factory(host, int((setting("SMTP_PORT") or "587")), timeout=30) as smtp:
         smtp.starttls()
         smtp.login(username, password)
         refused = smtp.send_message(message)

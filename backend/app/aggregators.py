@@ -9,6 +9,7 @@ from .discovery import elapsed, mark, polite_get
 from .models import Board, DiscoveryState
 from .collectors import canonical_url, existing_url_index, persist_snapshot, plain
 from .preferences import matches
+from .settings import setting
 
 log = logging.getLogger(__name__)
 
@@ -68,15 +69,15 @@ def usajobs_posting(item):
 
 
 async def fetch_remotive(client):
-    response = await polite_get(client, "https://remotive.com/api/remote-jobs", params={"category": "software-dev"})
+    response = await polite_get(client, "https://remotive.com/api/remote-jobs")
     return [remotive_posting(item) for item in response.json()["jobs"]]
 
 
-async def fetch_usajobs(client, key, email):
+async def fetch_usajobs(client, key, email, keyword=""):
     result = []
     for page in range(1, 21):
         response = await polite_get(client, "https://data.usajobs.gov/api/search",
-                                    params={"Keyword": "software", "ResultsPerPage": 500, "Page": page},
+                                    params={"Keyword": keyword, "ResultsPerPage": 500, "Page": page},
                                     headers={"Host": "data.usajobs.gov", "User-Agent": email, "Authorization-Key": key})
         search = response.json()["SearchResult"]
         result.extend(usajobs_posting(item) for item in search["SearchResultItems"])
@@ -94,10 +95,10 @@ async def fetch_remoteok(client):
             for item in response.json() if "id" in item]
 
 
-async def fetch_adzuna(client, app_id, app_key):
+async def fetch_adzuna(client, app_id, app_key, keyword=""):
     response = await polite_get(client, "https://api.adzuna.com/v1/api/jobs/us/search/1",
                                 params={"app_id": app_id, "app_key": app_key, "results_per_page": 50,
-                                        "category": "it-jobs", "sort_by": "date"})
+                                        "what": keyword, "sort_by": "date"})
     return [{"external_id": str(item["id"]), "company": (item.get("company") or {}).get("display_name") or "Unknown",
              "title": item.get("title", ""), "location": (item.get("location") or {}).get("display_name") or "",
              "description": plain(item.get("description", "")), "apply_url": item["redirect_url"]}
@@ -162,26 +163,31 @@ async def collect_aggregators(db, client, preferences, existing_urls=None):
                                ("hackernews", timedelta(hours=6))):
         if not elapsed(db.get(DiscoveryState, provider), interval):
             continue
-        key, email = os.getenv("USAJOBS_API_KEY", ""), os.getenv("USAJOBS_EMAIL", "")
+        key, email = setting("USAJOBS_API_KEY"), setting("USAJOBS_EMAIL")
         if provider == "usajobs" and not (key and email):
             log.warning("Skipping USAJOBS: USAJOBS_API_KEY and USAJOBS_EMAIL are required")
             results.append({"provider": provider, "skipped": "missing API key or email"})
             continue
-        app_id, app_key = os.getenv("ADZUNA_APP_ID", ""), os.getenv("ADZUNA_APP_KEY", "")
+        app_id = setting("ADZUNA_APP_ID")
+        app_key = setting("ADZUNA_API_KEY") or os.getenv("ADZUNA_APP_KEY", "")
         if provider == "adzuna" and not (app_id and app_key):
             log.warning("Skipping Adzuna: ADZUNA_APP_ID and ADZUNA_APP_KEY are required")
             results.append({"provider": provider, "skipped": "missing app ID or key"})
+            continue
+        titles = preferences.get("target_titles", [])
+        if provider in ("usajobs", "adzuna") and not titles:
+            results.append({"provider": provider, "skipped": "set a target title"})
             continue
         try:
             mark(db, provider)
             if provider == "remotive":
                 postings = await fetch_remotive(client)
             elif provider == "usajobs":
-                postings = await fetch_usajobs(client, key, email)
+                postings = await fetch_usajobs(client, key, email, titles[0])
             elif provider == "remoteok":
                 postings = await fetch_remoteok(client)
             elif provider == "adzuna":
-                postings = await fetch_adzuna(client, app_id, app_key)
+                postings = await fetch_adzuna(client, app_id, app_key, titles[0])
             else:
                 postings = await fetch_hackernews(client)
             stats = store_aggregator(db, provider, postings, preferences, existing_urls)

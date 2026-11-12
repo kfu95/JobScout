@@ -1,11 +1,11 @@
 {
-  "name": "REPLACE WITH YOUR NAME",
+  "name": "",
   "email": "",
-  "location": "New York, NY",
-  "summary": "Senior software engineer with product engineering experience.",
-  "skills": ["Python", "TypeScript", "React", "Swift", "GraphQL", "PostgreSQL", "Redis", "Kafka"],
-  "target_titles": ["senior software engineer", "senior backend engineer", "senior full-stack engineer", "senior growth engineer", "senior product engineer"],
-  "preferred_locations": ["new york", "nyc", "brooklyn", "manhattan", "remote"],
-  "salary_floor": 150000,
+  "location": "",
+  "summary": "",
+  "skills": [],
+  "target_titles": [],
+  "preferred_locations": [],
+  "salary_floor": null,
   "verified_experience": []
 }
