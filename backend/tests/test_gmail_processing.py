@@ -68,6 +68,9 @@ def test_alert_samples_and_wrappers():
         assert linked['apply_url'] == 'https://www.linkedin.com/jobs/view/12345'
     assert canonical_url('https://builtin.com/job/other/6789') == canonical_url(builtin)
     assert canonical_url('https://www.glassdoor.com/job-listing/other-JL987.htm') == canonical_url('https://www.glassdoor.com/job-listing/engineer-JL987.htm')
+    assert canonical_url('https://builtin.com/job/c%23-engineer/6789') == 'https://builtin.com/job/c%23-engineer/6789'
+    assert canonical_url('https://builtin.com/job/c%23-engineer-6789') == 'https://builtin.com/job/c%23-engineer-6789'
+    assert canonical_url('https://www.glassdoor.com/job-listing/c%23-engineer-JL987.htm') == 'https://www.glassdoor.com/job-listing/c%23-engineer-JL987.htm'
 
 
 def test_alert_ignores_valueless_anchor_attributes():

@@ -53,10 +53,10 @@ def canonical_url(url):
             if host == 'builtin.com' or host.endswith('.builtin.com'):
                 match = re.fullmatch(r'/job/([^/]+)/(\d+)/?', path)
                 if match:
-                    return f'https://builtin.com/job/{match.group(1)}/{match.group(2)}'
+                    return f'https://builtin.com{parts.path.rstrip("/")}'
                 match = re.fullmatch(r'/job/([^/]*\d[^/]*)/?', path)
                 if match:
-                    return f'https://builtin.com/job/{match.group(1)}'
+                    return f'https://builtin.com{parts.path.rstrip("/")}'
             if host == 'indeed.com' or host.endswith('.indeed.com'):
                 key = params.get('jk', [''])[0]
                 if path in ('/viewjob', '/rc/clk') and re.fullmatch(r'[A-Za-z0-9]+', key):
@@ -64,7 +64,7 @@ def canonical_url(url):
             if host == 'glassdoor.com' or host.endswith('.glassdoor.com'):
                 match = re.search(r'-JL(\d+)\.htm$', path, re.I)
                 if match:
-                    return f'https://www.glassdoor.com{path}'
+                    return f'https://www.glassdoor.com{parts.path}'
                 key = params.get('jobListingId', [''])[0]
                 if path == '/partner/jobListing.htm' and key.isdigit():
                     return f'https://www.glassdoor.com/partner/jobListing.htm?jobListingId={key}'
