@@ -28,7 +28,7 @@ def classify(subject, snippet, sender):
     matches = [category for category, pattern in rules if re.search(pattern, text)]
     if len(matches) == 1:
         return matches[0]
-    if not matches and ('linkedin.com' in sender or 'builtin.com' in sender) and re.search(r'\bjobs?\b', text):
+    if not matches and any(domain in sender for domain in ('linkedin.com', 'builtin.com', 'glassdoor.com', 'indeed.com')) and re.search(r'\bjobs?\b', text):
         return 'job_alert'
     fallback = matches[0] if matches else 'other'
     if os.getenv('OPENAI_API_KEY'):

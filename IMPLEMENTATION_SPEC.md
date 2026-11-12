@@ -11,12 +11,12 @@ You are developing this repository as a personal job discovery and review-before
 - API currently has no auth and listens on loopback. Add auth, CSRF protections, HTTPS, rate limits, and secure credentials before any public deployment.
 - Preserve audit events and idempotent reprocessing. Avoid duplicate model calls for unchanged job descriptions.
 
-## Milestone 1: Gmail lifecycle-message ingestion
+## Milestone 1: Gmail read-only ingestion
 
 1. Implement standard Google OAuth 2.0 for a **local installed application** (or supported hosted OAuth), requesting only Gmail read-only permission. Never use passwords or session cookies. Store refresh tokens encrypted or in user-restricted local storage excluded from Git.
-2. Pull Gmail messages matching user-configured labels or queries for application confirmations, rejections, recruiter responses, and interview invitations. Do not use Gmail job alerts for discovery. Add pagination and `historyId`/push support with a robust fallback sync path. Treat Gmail content as untrusted input.
+2. Pull Gmail messages matching user-configured labels or queries for job alerts, application confirmations, rejections, recruiter responses, and interview invitations. Add pagination and `historyId`/push support with a robust fallback sync path. Treat Gmail content as untrusted input.
 3. Store a `gmail_messages` table with provider message ID unique, RFC Message-ID, thread ID, source, subject, received time, minimal snippet, processed_at and classification status. Avoid raw message retention unless user opts in.
-4. Canonicalize job URLs found in lifecycle messages, separating tracker URLs from actual job URLs when safe. Associate messages with existing jobs by canonical URL and stable identifiers where available; do not create discovered jobs from email alerts.
+4. Parse job-alert links from LinkedIn, Built In, Glassdoor, and Indeed emails and canonicalize URLs, separating tracker URLs from actual job URLs when safe. Add discovered jobs to the existing preference-matched pipeline and deduplicate by canonical URL and stable identifiers. Never scrape those sites.
 5. Classify message types into `submission_confirmation`, `recruiter_outreach`, `interview_invite`, `rejection`, `other`. Use explicit heuristics first and optional LLM when ambiguous.
 6. Match status updates only on confident evidence: employer domain, company, title, requisition ID, original URL, thread history. Queue ambiguous cases for human review. Never silently mark a submission confirmed from a generic marketing email.
 7. Build settings UI for Gmail connection status, search query, resync and review of ambiguous classifications. Add fixture tests for MIME formats, threading, dedup, malformed links, and revoked OAuth credentials.

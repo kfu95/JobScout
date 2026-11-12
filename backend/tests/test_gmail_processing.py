@@ -1,0 +1,111 @@
+import base64
+from datetime import datetime, timezone
+from urllib.parse import quote
+
+from sqlalchemy import select
+
+from app.collectors import canonical_url
+from app.gmail_classify import classify
+from app.gmail_leads import message_links
+from app.gmail_process import process_pending
+from app.models import Board, GmailMessage, Job
+from gmail_fakes import Request
+
+
+def encoded(text):
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip('=')
+
+
+def test_classification_and_ai_fallback(monkeypatch):
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    for subject, expected in [
+        ('New jobs for you', 'job_alert'),
+        ('Application received', 'submission_confirmation'),
+        ('A recruiter is reaching out', 'recruiter_outreach'),
+        ('Schedule your interview', 'interview_invite'),
+        ('Unfortunately we are not moving forward', 'rejection'),
+        ('Hello', 'other'),
+    ]:
+        assert classify(subject, '', '') == expected
+    monkeypatch.setenv('OPENAI_API_KEY', 'test')
+    def fail(*args):
+        raise RuntimeError('unavailable')
+    monkeypatch.setattr('app.gmail_classify._ai_parse', fail)
+    assert classify('Hello', '', '') == 'other'
+
+
+def test_alert_samples_and_wrappers():
+    linkedin = 'https://www.linkedin.com/jobs/view/senior-engineer-12345/?trackingId=abc'
+    builtin = 'https://builtin.com/job/software-engineer/6789?utm_source=email'
+    wrapped = 'https://tracker.example/click?url=' + quote(linkedin, safe='')
+    html = f'''<a href="{wrapped}">Senior Engineer at Example | New York</a>
+    <a href="{builtin}">Software Engineer at Acme | Remote</a>
+    <a href="https://www.indeed.com/viewjob?jk=abc123&amp;from=email">Engineer at A</a>
+    <a href="https://www.glassdoor.com/job-listing/engineer-JL987.htm">Engineer at B</a>
+    <a href="https://linkedin.com.evil.test/jobs/view/12345">Bad</a>
+    <a href="https://[bad">Broken</a>'''
+    payload = {'mimeType': 'multipart/alternative', 'parts': [
+        {'mimeType': 'text/html', 'body': {'data': encoded(html)}},
+        {'mimeType': 'text/plain', 'body': {'data': encoded('Senior Engineer at Example | New York https://www.linkedin.com/jobs/view/12345/')}},
+    ]}
+    jobs = message_links(payload)
+    assert len(jobs) == 4
+    linked = next(job for job in jobs if 'linkedin.com' in job['apply_url'])
+    assert (linked['title'], linked['company'], linked['location']) == ('Senior Engineer', 'Example', 'New York')
+    assert linked['apply_url'] == 'https://www.linkedin.com/jobs/view/12345'
+    assert canonical_url('https://builtin.com/job/other/6789') == canonical_url(builtin)
+    assert canonical_url('https://www.glassdoor.com/job-listing/other-JL987.htm') == canonical_url('https://www.glassdoor.com/job-listing/engineer-JL987.htm')
+
+
+def test_processing_deduplicates_and_skips_spam(gmail_setup, monkeypatch):
+    _, db = gmail_setup
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.setattr('app.gmail_process.load_preferences', lambda profile: {'target_titles': ['senior engineer'], 'locations': ['New York'], 'work_modes': [], 'seniority': []})
+    class Messages:
+        def __init__(self):
+            self.calls = []
+        def get(self, **kwargs):
+            self.calls.append((kwargs['id'], kwargs['format']))
+            if kwargs['id'] == 'spam':
+                return Request({'labelIds': ['SPAM']})
+            if kwargs['format'] == 'metadata':
+                return Request({'payload': {'headers': [{'name': 'From', 'value': 'alerts@linkedin.com'}]}})
+            if kwargs['format'] == 'full':
+                url = 'https://www.linkedin.com/jobs/view/12345/?trk=email'
+                return Request({'payload': {'mimeType': 'text/html', 'body': {'data': encoded(f'<a href="{url}">Senior Engineer at Example | New York</a>')}}})
+            return Request({'labelIds': ['INBOX']})
+    messages = Messages()
+    for message_id in ('one', 'two', 'spam'):
+        db.add(GmailMessage(provider_message_id=message_id, thread_id='thread', subject='New jobs for you', snippet='', received_at=datetime.now(timezone.utc)))
+    db.commit()
+    assert process_pending(db, messages) == 2
+    assert process_pending(db, messages) == 0
+    jobs = db.scalars(select(Job)).all()
+    assert len(jobs) == 1
+    assert jobs[0].title == 'Senior Engineer'
+    assert db.get(Board, jobs[0].board_id).company == 'Example'
+    assert ('spam', 'full') not in messages.calls
+    assert ('spam', 'metadata') not in messages.calls
+
+
+def test_alert_deduplicates_existing_aggregator_job(gmail_setup, monkeypatch):
+    _, db = gmail_setup
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.setattr('app.gmail_process.load_preferences', lambda profile: {'target_titles': ['senior engineer'], 'locations': ['New York'], 'work_modes': [], 'seniority': []})
+    board = Board(provider='remotive', slug='example', company='Example')
+    db.add(board)
+    db.flush()
+    db.add(Job(board_id=board.id, external_id='old', title='Senior Engineer', location='New York', description='', apply_url='https://www.linkedin.com/jobs/view/senior-engineer-12345/?trk=source', hash='old'))
+    db.add(GmailMessage(provider_message_id='alert', thread_id='t', subject='New jobs for you', snippet='', received_at=datetime.now(timezone.utc)))
+    db.commit()
+    class Messages:
+        def get(self, **kwargs):
+            if kwargs['format'] == 'metadata':
+                return Request({'payload': {'headers': []}})
+            if kwargs['format'] == 'full':
+                content = '<a href="https://www.linkedin.com/jobs/view/12345/">Senior Engineer at Example | New York</a>'
+                return Request({'payload': {'mimeType': 'text/html', 'body': {'data': encoded(content)}}})
+            return Request({'labelIds': ['INBOX']})
+    assert process_pending(db, Messages()) == 1
+    assert len(db.scalars(select(Job)).all()) == 1
+    assert db.scalars(select(Job)).one().board_id == board.id
