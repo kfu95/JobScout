@@ -17,7 +17,7 @@ You are developing this repository as a personal job discovery and review-before
 2. Pull Gmail messages matching user-configured labels or queries for job alerts, application confirmations, rejections, recruiter responses, and interview invitations. Add pagination and `historyId`/push support with a robust fallback sync path. Treat Gmail content as untrusted input.
 3. Store a `gmail_messages` table with provider message ID unique, RFC Message-ID, thread ID, source, subject, received time, minimal snippet, processed_at and classification status. Avoid raw message retention unless user opts in.
 4. Parse job-alert links from LinkedIn, Built In, Glassdoor, and Indeed emails and canonicalize URLs, separating tracker URLs from actual job URLs when safe. Add discovered jobs to the existing preference-matched pipeline and deduplicate by canonical URL and stable identifiers. Never scrape those sites.
-5. Classify message types into `submission_confirmation`, `recruiter_outreach`, `interview_invite`, `rejection`, `other`. Use explicit heuristics first and optional LLM when ambiguous.
+5. Classify message types into `job_alert`, `submission_confirmation`, `recruiter_outreach`, `interview_invite`, `rejection`, `other`. Use explicit heuristics first and optional LLM when ambiguous.
 6. Match status updates only on confident evidence: employer domain, company, title, requisition ID, original URL, thread history. Queue ambiguous cases for human review. Never silently mark a submission confirmed from a generic marketing email.
 7. Build settings UI for Gmail connection status, search query, resync and review of ambiguous classifications. Add fixture tests for MIME formats, threading, dedup, malformed links, and revoked OAuth credentials.
 
@@ -52,7 +52,7 @@ You are developing this repository as a personal job discovery and review-before
 - AI failure falls back to heuristic scoring and does not invent data.
 - Application cannot be marked reported without approval.
 - Application cannot be marked confirmed without evidence.
-- External leads do not require scraping LinkedIn or Built In.
+- External leads do not require scraping their source sites.
 - OAuth token files and career facts are excluded from version control.
 
 When implementing changes, show which files changed and run the tests. Do not claim external integrations work until actually exercised with credentials and verified against representative samples.
