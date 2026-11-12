@@ -97,8 +97,12 @@ def message_links(payload):
         title = fields[0].strip()[:500]
         if not title or title.lower() in {'view job', 'apply', 'view', 'job details', 'see job'}:
             continue
-        results[canonical] = {'external_id': canonical, 'title': title,
-                              'company': fields[1].strip()[:200] if len(fields) > 1 else 'Unknown',
-                              'location': fields[2].strip() if len(fields) > 2 else '',
-                              'description': '', 'apply_url': canonical}
+        posting = {'external_id': canonical, 'title': title,
+                   'company': fields[1].strip()[:200] if len(fields) > 1 else 'Unknown',
+                   'location': fields[2].strip() if len(fields) > 2 else '',
+                   'description': '', 'apply_url': canonical}
+        existing = results.get(canonical)
+        completeness = sum(posting[field] not in ('', 'Unknown') for field in ('title', 'company', 'location'))
+        if existing is None or completeness > sum(existing[field] not in ('', 'Unknown') for field in ('title', 'company', 'location')):
+            results[canonical] = posting
     return list(results.values())

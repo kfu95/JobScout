@@ -5,7 +5,7 @@ from urllib.parse import quote
 from sqlalchemy import select
 
 from app.collectors import canonical_url
-from app.gmail_classify import classify
+from app.gmail_classify import Classification, classify
 from app.gmail_leads import message_links
 from app.gmail_process import process_pending
 from app.models import Board, GmailMessage, Job
@@ -18,6 +18,7 @@ def encoded(text):
 
 def test_classification_and_ai_fallback(monkeypatch):
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('GMAIL_AI_CLASSIFY', raising=False)
     for subject, expected in [
         ('New jobs for you', 'job_alert'),
         ('Application received', 'submission_confirmation'),
@@ -27,7 +28,15 @@ def test_classification_and_ai_fallback(monkeypatch):
         ('Hello', 'other'),
     ]:
         assert classify(subject, '', '') == expected
+    calls = []
     monkeypatch.setenv('OPENAI_API_KEY', 'test')
+    monkeypatch.setattr('app.gmail_classify._ai_parse', lambda *args: calls.append(args) or Classification(category='job_alert'))
+    assert classify('Hello', '', '') == 'other'
+    assert calls == []
+    monkeypatch.setenv('GMAIL_AI_CLASSIFY', 'true')
+    assert classify('Hello', '', '') == 'job_alert'
+    assert len(calls) == 1
+
     def fail(*args):
         raise RuntimeError('unavailable')
     monkeypatch.setattr('app.gmail_classify._ai_parse', fail)
@@ -44,15 +53,16 @@ def test_alert_samples_and_wrappers():
     <a href="https://www.glassdoor.com/job-listing/engineer-JL987.htm">Engineer at B</a>
     <a href="https://linkedin.com.evil.test/jobs/view/12345">Bad</a>
     <a href="https://[bad">Broken</a>'''
-    payload = {'mimeType': 'multipart/alternative', 'parts': [
+    parts = [
         {'mimeType': 'text/html', 'body': {'data': encoded(html)}},
-        {'mimeType': 'text/plain', 'body': {'data': encoded('Senior Engineer at Example | New York https://www.linkedin.com/jobs/view/12345/')}},
-    ]}
-    jobs = message_links(payload)
-    assert len(jobs) == 4
-    linked = next(job for job in jobs if 'linkedin.com' in job['apply_url'])
-    assert (linked['title'], linked['company'], linked['location']) == ('Senior Engineer', 'Example', 'New York')
-    assert linked['apply_url'] == 'https://www.linkedin.com/jobs/view/12345'
+        {'mimeType': 'text/plain', 'body': {'data': encoded('Senior Engineer https://www.linkedin.com/jobs/view/12345/')}},
+    ]
+    for ordered_parts in (parts, parts[::-1]):
+        jobs = message_links({'mimeType': 'multipart/alternative', 'parts': ordered_parts})
+        assert len(jobs) == 4
+        linked = next(job for job in jobs if 'linkedin.com' in job['apply_url'])
+        assert (linked['title'], linked['company'], linked['location']) == ('Senior Engineer', 'Example', 'New York')
+        assert linked['apply_url'] == 'https://www.linkedin.com/jobs/view/12345'
     assert canonical_url('https://builtin.com/job/other/6789') == canonical_url(builtin)
     assert canonical_url('https://www.glassdoor.com/job-listing/other-JL987.htm') == canonical_url('https://www.glassdoor.com/job-listing/engineer-JL987.htm')
 
