@@ -14,11 +14,11 @@ bash setup.sh
 
 The script creates a random local database password in `.env`, builds the containers, and opens the dashboard where supported. Otherwise open http://localhost:3000. The first build may take several minutes. Upload a PDF or DOCX resume, review the extracted facts, and save your job preferences. You can configure optional integrations in the same screen. The API is at http://localhost:8000/docs.
 
-The worker continues polling while Docker is running, including after a reboot if Docker starts automatically. A morning digest can only run while Docker is running. Gmail job-alert discovery is not yet available. The Gmail integration currently imports filtered application messages, not job alerts. Department and years of experience are saved but do not yet affect matching.
+The worker continues polling while Docker is running, including after a reboot if Docker starts automatically. A morning digest can only run while Docker is running. Gmail imports filtered application messages and discovers jobs from alerts. Department and years of experience are saved but do not yet affect matching.
 
 ## Integrations and advanced configuration
 
-Adzuna requires a free app ID and key, which can be saved in the dashboard or set as `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in `.env`. USAJOBS requires a free API key and the email used to request it. Save them in the dashboard, or set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`. Dashboard values take precedence. Gmail requires a Google Cloud Desktop OAuth client with the Gmail API enabled. Upload its JSON in the dashboard, save the settings, then select Connect Gmail and authorize the read-only permission. Set a Gmail query and/or labels in the dashboard before syncing; the integration is intended for filtered application messages. Restart the API and worker after editing `.env`:
+Adzuna requires a free app ID and key, which can be saved in the dashboard or set as `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in `.env`. USAJOBS requires a free API key and the email used to request it. Save them in the dashboard, or set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`. Dashboard values take precedence. Gmail requires a Google Cloud Desktop OAuth client with the Gmail API enabled. Upload its JSON in the dashboard, save the settings, then select Connect Gmail and authorize the read-only permission. Set a Gmail query and/or labels in the dashboard before syncing; the integration can classify filtered lifecycle messages and discover jobs from alerts. Restart the API and worker after editing `.env`:
 
 ```bash
 docker compose up -d --force-recreate api worker
@@ -62,4 +62,4 @@ The worker sends new matched open jobs daily at `DIGEST_TIME` (24-hour `HH:MM`, 
 
 Alternatively configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` and `DIGEST_TO` in `.env`. Dashboard values take precedence. Keep Docker running for scheduled delivery.
 
-Gmail filtering excludes Spam and Trash, and does not support time-relative search operators. Matching message metadata and snippets are retained; raw bodies and attachments are not. Changing filters does not backfill older mail. The integration is verified with mocks, not a live Google account.
+Gmail classification uses local heuristics unless both `GMAIL_AI_CLASSIFY=true` and `OPENAI_API_KEY` are set, which sends ambiguous message subject, snippet, and sender to OpenAI. Gmail filtering excludes Spam and Trash, and does not support time-relative search operators. Matching message metadata and snippets are retained; classified job-alert bodies are read to extract listing links, but raw bodies and attachments are not retained. LinkedIn, Built In, Glassdoor, and Indeed listings are not scraped. Changing filters does not backfill older mail. The integration is verified with mocks, not a live Google account.

@@ -151,6 +151,16 @@ def content_hash(posting):
 
 
 def canonical_url(url):
+    from .gmail_leads import canonical_url as alert_url
+    normalized = alert_url(url)
+    if normalized:
+        glassdoor_id = re.search(r'(?:-JL|jobListingId=)(\d+)', normalized, re.I)
+        if glassdoor_id and 'glassdoor.com/' in normalized:
+            return f'glassdoor:{glassdoor_id.group(1)}'
+        builtin_id = re.search(r'/job/(?:[^/]+/)?(\d+)$', normalized)
+        if builtin_id and 'builtin.com/' in normalized:
+            return f'builtin:{builtin_id.group(1)}'
+        return normalized
     parsed = urlsplit(url)
     query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
              if not (k.lower().startswith("utm_") or k.lower() in {"gh_src", "source", "ref", "referrer"})]
