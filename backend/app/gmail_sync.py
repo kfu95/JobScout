@@ -1,5 +1,4 @@
 import fcntl
-import os
 import re
 from datetime import datetime, timezone
 
