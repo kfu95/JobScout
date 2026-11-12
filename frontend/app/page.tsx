@@ -41,6 +41,7 @@ export default function Dashboard() {
   const reload = useCallback(async()=>{await Promise.all([reloadJobs(),reloadOverview()]);},[reloadJobs,reloadOverview]);
   useEffect(()=>{reloadJobs().catch(e=>setNotice(e.message));},[reloadJobs]);
   useEffect(()=>{reloadOverview().catch(e=>setNotice(e.message));},[reloadOverview]);
+  useEffect(()=>{const id = new URLSearchParams(window.location.search).get("job"); if(id && /^\d+$/.test(id)) selectJob(Number(id));},[]);
   async function selectJob(id:number){try{setSelected(await api<Job>(`/api/jobs/${id}`));}catch(e){setNotice(String(e));}}
   async function action(path:string,body?:object) {
     setBusy(true);setNotice("");
@@ -60,7 +61,8 @@ export default function Dashboard() {
   }
   return <main className="shell">
     <header><div><p className="eyebrow">PERSONAL JOB SEARCH</p><h1>Job Agent</h1><p className="muted">Discover, match, prepare. You always submit.</p></div>
-      <button disabled={busy} onClick={()=>action("/api/collect")}>Run collectors now</button></header>
+      <div className="row"><button disabled={busy} onClick={()=>action("/api/digest/test")}>Send test digest</button>
+      <button disabled={busy} onClick={()=>action("/api/collect")}>Run collectors now</button></div></header>
     {notice && <div role="status" className="notice">{notice}</div>}
     <div className="stats">{([
       ["Tracked boards",stats?.boards],["Open jobs",stats?.jobs],["Strong matches",stats?.strong_matches],
@@ -69,16 +71,17 @@ export default function Dashboard() {
     <Onboarding onSaved={async()=>{await reload(); if(selected) await selectJob(selected.id);}}/>
     <div className="columns">
       <section className="panel feed"><div className="sectionTitle"><h2>Job feed</h2><span>{jobs.length} shown</span></div>
-        <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
+        <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, locations…" />
           <label>Min score <select value={minScore} onChange={e=>setMinScore(Number(e.target.value))}><option value="0">All</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option></select></label></div>
         <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Run collection to discover jobs.</p>}
-          {jobs.map(j=><button className={`job ${selected?.id===j.id?"chosen":""}`} key={j.id} onClick={()=>selectJob(j.id)}>
+          {jobs.map(j=><div key={j.id}><button className={`job ${selected?.id===j.id?"chosen":""}`} onClick={()=>selectJob(j.id)}>
             <span className="jobHead"><b>{j.title}</b><span className="score">{j.score}</span></span>
-            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
-          </button>)}</div></section>
+            <span>{j.company} · {j.location || "Location unspecified"}</span><small>{j.provider === "remoteok" ? "Remote OK" : j.provider} · {j.score_method} · {j.application_status.replaceAll("_"," ")}</small>
+          </button>{j.provider === "adzuna" && <a href="https://www.adzuna.com/" target="_blank" rel="noopener noreferrer" style={{display:"inline-block", minWidth:116, minHeight:23}}>Adzuna</a>}</div>)}</div></section>
       <section className="panel detail">{selected ? <>
         <div className="sectionTitle"><h2>{selected.title}</h2><span className="score">{selected.score}</span></div>
         <p>{selected.company} · {selected.location}</p>
+        {selected.provider === "adzuna" && <a href="https://www.adzuna.com/" target="_blank" rel="noopener noreferrer" style={{display:"inline-block", minWidth:116, minHeight:23}}>Adzuna</a>}
         <p className="muted">{selected.score_reason || "No score reasoning yet"}</p>
         <div className="row actions">
           <a className="button outline" href={safeLink(selected.apply_url)} target="_blank" rel="noopener noreferrer">Open job listing</a>

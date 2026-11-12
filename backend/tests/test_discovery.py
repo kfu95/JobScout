@@ -37,12 +37,14 @@ def test_aggregator_responses_and_key_headers(monkeypatch):
         return httpx.Response(200, json={"SearchResult": {"SearchResultCountAll": 1, "SearchResultItems": [{"MatchedObjectId": "2", "MatchedObjectDescriptor": {"PositionTitle": "Senior Software Engineer", "OrganizationName": "Agency", "PositionURI": "https://usajobs.gov/job/2", "PositionLocation": [{"LocationName": "New York"}], "PositionRemuneration": [{"MinimumRange": "92108", "MaximumRange": "119746", "RateIntervalCode": "PA", "Description": "Per Year"}]}}]}})
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            return await fetch_remotive(client), await fetch_usajobs(client, "secret", "person@example.com")
+            return await fetch_remotive(client), await fetch_usajobs(client, "secret", "person@example.com", "accountant")
     remotive, usa = run(exercise())
     assert remotive[0]["salary_max"] == 50000
     assert usa[0]["salary_max"] == 119746
     assert not matches(remotive[0], PREFS)
     assert not matches(usa[0], PREFS)
+    assert requests[1].url.params["Keyword"] == "accountant"
+    assert "category" not in requests[0].url.params
     assert requests[1].headers["authorization-key"] == "secret"
     assert requests[1].headers["user-agent"] == "person@example.com"
     assert not matches({**remotive[0], "remote_region": "Germany"}, PREFS)
@@ -158,8 +160,8 @@ def test_full_locations_match_before_bounded_persistence():
             board = Board(company=f"Company {index}", provider=f"provider-{index}", slug=f"provider-{index}")
             db.add(board)
             db.commit()
-            persist_snapshot(db, board, [posting])
-            persist_snapshot(db, board, [{**posting, "location": posting["location"] + ", Updated Place"}])
+            persist_snapshot(db, board, [posting], preferences=PREFS)
+            persist_snapshot(db, board, [{**posting, "location": posting["location"] + ", Updated Place"}], preferences=PREFS)
             job = db.scalar(select(Job).where(Job.board_id == board.id))
             versions = db.scalars(select(JobVersion).where(JobVersion.job_id == job.id)).all()
             assert len(job.location) == 500 and job.location.endswith("...")
@@ -338,3 +340,132 @@ def test_public_board_endpoints_and_retry_after(monkeypatch):
     posts = run(exercise())
     assert [len(page) for page in posts] == [1, 1, 1]
     assert 3 in waits
+
+
+def test_new_aggregator_responses(monkeypatch):
+    from app.aggregators import fetch_adzuna, fetch_remoteok
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "remoteok.com":
+            return httpx.Response(200, json=[{"legal": "terms"}, {"id": 7, "company": "Example", "position": "Software Engineer", "location": "USA", "description": "<p>Python</p>", "url": "https://remoteok.com/remote-jobs/7", "apply_url": "https://example.com/apply"}])
+        return httpx.Response(200, json={"results": [{"id": "8", "company": {"display_name": "Example"}, "title": "Software Engineer", "location": {"display_name": "New York"}, "description": "Snippet", "redirect_url": "https://www.adzuna.com/land/8"}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_remoteok(client), await fetch_adzuna(client, "id", "key")
+
+    remote, adzuna = run(exercise())
+    assert remote[0]["apply_url"] == "https://remoteok.com/remote-jobs/7"
+    assert remote[0]["description"] == "Python"
+    assert adzuna[0]["location"] == "New York"
+    assert adzuna[0]["apply_url"] == "https://www.adzuna.com/land/8"
+    assert requests[1].url.params["app_id"] == "id"
+    assert requests[1].url.params["app_key"] == "key"
+
+
+def test_hackernews_only_collects_top_level_hiring_comments(monkeypatch):
+    from app.aggregators import fetch_hackernews
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+
+    def handler(request):
+        if request.url.path.endswith("search_by_date"):
+            return httpx.Response(200, json={"hits": [{"objectID": "10", "title": "Ask HN: Who is hiring? (November 2026)"}]})
+        return httpx.Response(200, json={"children": [{"id": 11, "text": "Acme | Software Engineer | Remote<p>Python</p>", "children": [{"id": 12, "text": "reply"}]}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_hackernews(client)
+
+    postings = run(exercise())
+    assert len(postings) == 1
+    assert postings[0]["company"] == "Acme"
+    assert postings[0]["title"] == "Acme | Software Engineer | Remote"
+    assert postings[0]["apply_url"] == "https://news.ycombinator.com/item?id=11"
+
+
+def test_adzuna_log_redacts_credentials(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    logging.getLogger("httpx").info("HTTP Request: %s", "https://api.adzuna.com/?app_id=private-id&app_key=private-key")
+    assert "private-id" not in caplog.text
+    assert "private-key" not in caplog.text
+    assert "Adzuna HTTP request completed" in caplog.text
+
+
+def test_adzuna_missing_credentials_skip_and_do_not_request(monkeypatch, caplog):
+    monkeypatch.delenv("ADZUNA_APP_ID", raising=False)
+    monkeypatch.delenv("ADZUNA_APP_KEY", raising=False)
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "remotive.com":
+            return httpx.Response(200, json={"jobs": []})
+        if request.url.host == "remoteok.com":
+            return httpx.Response(200, json=[{"legal": "terms"}])
+        return httpx.Response(200, json={"hits": [{"objectID": "10", "title": "Ask HN: Who is hiring?"}]} if request.url.path.endswith("search_by_date") else {"children": []})
+
+    async def exercise(db):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await collect_aggregators(db, client, PREFS)
+
+    with Session(engine) as db:
+        result = run(exercise(db))
+    assert any(row.get("provider") == "adzuna" and row.get("skipped") for row in result)
+    assert "Skipping Adzuna" in caplog.text
+    assert all(request.url.host != "api.adzuna.com" for request in requests)
+
+
+def test_adzuna_uses_dashboard_credentials_and_target(monkeypatch):
+    from app.settings import IntegrationSettings, save_settings
+
+    save_settings(IntegrationSettings(adzuna_app_id="dashboard-id", adzuna_api_key="dashboard-key"))
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr("app.discovery.asyncio.sleep", no_wait)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "api.adzuna.com":
+            return httpx.Response(200, json={"results": []})
+        if request.url.host == "remotive.com":
+            return httpx.Response(200, json={"jobs": []})
+        if request.url.host == "remoteok.com":
+            return httpx.Response(200, json=[{"legal": "terms"}])
+        return httpx.Response(200, json={"hits": [{"objectID": "10", "title": "Ask HN: Who is hiring?"}]} if request.url.path.endswith("search_by_date") else {"children": []})
+
+    async def exercise(db):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await collect_aggregators(db, client, PREFS)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        result = run(exercise(db))
+    request = next(req for req in requests if req.url.host == "api.adzuna.com")
+    assert request.url.params["app_id"] == "dashboard-id"
+    assert request.url.params["app_key"] == "dashboard-key"
+    assert request.url.params["what"] == "software engineer"
+    assert any(row.get("provider") == "adzuna" and row.get("ok") for row in result)

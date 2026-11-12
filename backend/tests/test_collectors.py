@@ -6,7 +6,8 @@ from app.models import Board, Job, JobVersion
 import app.collectors as collectors
 import app.scoring as scoring
 from app.collectors import normalize, content_hash, persist_snapshot
-from app.onboarding import Preferences, load_preferences, save_preferences
+from app.onboarding import Preferences, save_preferences
+from app.preferences import load_preferences
 from app.scoring import baseline_score, prepare_packet, score_posting
 
 

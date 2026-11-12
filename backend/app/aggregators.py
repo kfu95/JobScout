@@ -9,8 +9,20 @@ from .discovery import elapsed, mark, polite_get
 from .models import Board, DiscoveryState
 from .collectors import canonical_url, existing_url_index, persist_snapshot, plain
 from .preferences import matches
+from .settings import setting
 
 log = logging.getLogger(__name__)
+
+
+class RedactAdzunaRequest(logging.Filter):
+    def filter(self, record):
+        if "api.adzuna.com" in record.getMessage():
+            record.msg = "Adzuna HTTP request completed"
+            record.args = ()
+        return True
+
+
+logging.getLogger("httpx").addFilter(RedactAdzunaRequest())
 
 
 def remotive_salary_max(text):
@@ -57,21 +69,61 @@ def usajobs_posting(item):
 
 
 async def fetch_remotive(client):
-    response = await polite_get(client, "https://remotive.com/api/remote-jobs", params={"category": "software-dev"})
+    response = await polite_get(client, "https://remotive.com/api/remote-jobs")
     return [remotive_posting(item) for item in response.json()["jobs"]]
 
 
-async def fetch_usajobs(client, key, email):
+async def fetch_usajobs(client, key, email, keyword=""):
     result = []
     for page in range(1, 21):
         response = await polite_get(client, "https://data.usajobs.gov/api/search",
-                                    params={"Keyword": "software", "ResultsPerPage": 500, "Page": page},
+                                    params={"Keyword": keyword, "ResultsPerPage": 500, "Page": page},
                                     headers={"Host": "data.usajobs.gov", "User-Agent": email, "Authorization-Key": key})
         search = response.json()["SearchResult"]
         result.extend(usajobs_posting(item) for item in search["SearchResultItems"])
         if len(result) >= int(search["SearchResultCountAll"]):
             return result
     raise ValueError("USAJOBS results exceed the 10,000 result API limit")
+
+
+
+async def fetch_remoteok(client):
+    response = await polite_get(client, "https://remoteok.com/api")
+    return [{"external_id": str(item["id"]), "company": item.get("company") or "Unknown",
+             "title": item.get("position", ""), "location": "Remote " + (item.get("location") or ""),
+             "description": plain(item.get("description", "")), "apply_url": item["url"]}
+            for item in response.json() if "id" in item]
+
+
+async def fetch_adzuna(client, app_id, app_key, keyword=""):
+    response = await polite_get(client, "https://api.adzuna.com/v1/api/jobs/us/search/1",
+                                params={"app_id": app_id, "app_key": app_key, "results_per_page": 50,
+                                        "what": keyword, "sort_by": "date"})
+    return [{"external_id": str(item["id"]), "company": (item.get("company") or {}).get("display_name") or "Unknown",
+             "title": item.get("title", ""), "location": (item.get("location") or {}).get("display_name") or "",
+             "description": plain(item.get("description", "")), "apply_url": item["redirect_url"]}
+            for item in response.json()["results"]]
+
+
+async def fetch_hackernews(client):
+    url = "https://hn.algolia.com/api/v1/search_by_date"
+    response = await polite_get(client, url, params={"query": "Who is hiring", "tags": "story,author_whoishiring", "hitsPerPage": 20})
+    stories = [hit for hit in response.json()["hits"] if re.match(r"(?i)^ask hn: who is hiring", hit.get("title") or "")]
+    if not stories:
+        raise ValueError("No Who is hiring thread found")
+    story_id = stories[0]["objectID"]
+    response = await polite_get(client, f"https://hn.algolia.com/api/v1/items/{story_id}")
+    postings = []
+    for item in response.json()["children"]:
+        if not item.get("text"):
+            continue
+        description = plain(item["text"])
+        heading = plain(re.split(r"(?i)<p\b|<br\b|\n", item["text"], maxsplit=1)[0])
+        company = heading.split("|", 1)[0].strip()
+        postings.append({"external_id": str(item["id"]), "company": company or "Unknown",
+                         "title": heading[:500], "location": heading, "description": description,
+                         "apply_url": f"https://news.ycombinator.com/item?id={item['id']}"})
+    return postings
 
 
 def store_aggregator(db, provider, postings, preferences, existing_urls=None):
@@ -106,21 +158,46 @@ def store_aggregator(db, provider, postings, preferences, existing_urls=None):
 
 async def collect_aggregators(db, client, preferences, existing_urls=None):
     results = []
-    for provider, interval in (("remotive", timedelta(hours=6)), ("usajobs", timedelta(hours=6))):
+    for provider, interval in (("remotive", timedelta(hours=6)), ("usajobs", timedelta(hours=6)),
+                               ("remoteok", timedelta(hours=6)), ("adzuna", timedelta(hours=6)),
+                               ("hackernews", timedelta(hours=6))):
         if not elapsed(db.get(DiscoveryState, provider), interval):
             continue
-        key, email = os.getenv("USAJOBS_API_KEY", ""), os.getenv("USAJOBS_EMAIL", "")
+        key, email = setting("USAJOBS_API_KEY"), setting("USAJOBS_EMAIL")
         if provider == "usajobs" and not (key and email):
             log.warning("Skipping USAJOBS: USAJOBS_API_KEY and USAJOBS_EMAIL are required")
             results.append({"provider": provider, "skipped": "missing API key or email"})
             continue
+        app_id = setting("ADZUNA_APP_ID")
+        app_key = setting("ADZUNA_API_KEY") or os.getenv("ADZUNA_APP_KEY", "")
+        if provider == "adzuna" and not (app_id and app_key):
+            log.warning("Skipping Adzuna: ADZUNA_APP_ID and ADZUNA_APP_KEY are required")
+            results.append({"provider": provider, "skipped": "missing app ID or key"})
+            continue
+        titles = preferences.get("target_titles", [])
+        if provider in ("usajobs", "adzuna") and not titles:
+            results.append({"provider": provider, "skipped": "set a target title"})
+            continue
         try:
             mark(db, provider)
-            postings = await (fetch_remotive(client) if provider == "remotive" else fetch_usajobs(client, key, email))
+            if provider == "remotive":
+                postings = await fetch_remotive(client)
+            elif provider == "usajobs":
+                postings = await fetch_usajobs(client, key, email, titles[0])
+            elif provider == "remoteok":
+                postings = await fetch_remoteok(client)
+            elif provider == "adzuna":
+                postings = await fetch_adzuna(client, app_id, app_key, titles[0])
+            else:
+                postings = await fetch_hackernews(client)
             stats = store_aggregator(db, provider, postings, preferences, existing_urls)
             results.append({"provider": provider, "ok": True, **stats})
         except Exception as exc:
             db.rollback()
-            log.exception("%s collection failed", provider)
-            results.append({"provider": provider, "ok": False, "error": str(exc)[:250]})
+            if provider == "adzuna":
+                log.error("Adzuna collection failed: %s", type(exc).__name__)
+                results.append({"provider": provider, "ok": False, "error": "Adzuna request failed"})
+            else:
+                log.exception("%s collection failed", provider)
+                results.append({"provider": provider, "ok": False, "error": str(exc)[:250]})
     return results

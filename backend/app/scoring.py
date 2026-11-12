@@ -6,9 +6,8 @@ from .onboarding import load_facts
 from .preferences import candidate_profile, eligibility, load_preferences, preference_bonuses
 
 DEFAULT_PROFILE = {
-    "name": "", "skills": [],
-    "target_titles": ["senior software engineer", "senior backend engineer", "senior full-stack engineer", "senior product engineer", "senior growth engineer"],
-    "preferred_locations": ["new york", "nyc", "remote"], "verified_experience": []
+    "name": "", "skills": [], "target_titles": [],
+    "preferred_locations": [], "verified_experience": []
 }
 
 def load_profile():

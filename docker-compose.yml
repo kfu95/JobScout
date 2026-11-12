@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: jobagent
       POSTGRES_USER: jobagent
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev_only_change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run bash setup.sh first to generate a database password}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,40 +17,63 @@ services:
     build: ./backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:?Run bash setup.sh first to generate a database password}@db:5432/jobagent
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
       USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
       USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      DIGEST_TO: ${DIGEST_TO:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      DIGEST_TIME: ${DIGEST_TIME:-08:00}
+      DIGEST_TIMEZONE: ${DIGEST_TIMEZONE:-UTC}
       GMAIL_AI_CLASSIFY: ${GMAIL_AI_CLASSIFY:-false}
       GMAIL_CREDENTIAL_DIR: /gmail
       GMAIL_QUERY: ${GMAIL_QUERY:-}
       GMAIL_LABELS: ${GMAIL_LABELS:-}
       PROFILE_PATH: /config/profile.json
       ONBOARDING_DIR: /onboarding
-      CORS_ORIGINS: http://localhost:3000
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-3000}
+      GMAIL_REDIRECT_URI: http://127.0.0.1:${API_PORT:-8000}/
     volumes:
       - ./config:/config:ro
-      - ./config/gmail:/gmail
-      - ./config/onboarding:/onboarding
+      - gmail:/gmail
+      - onboarding:/onboarding
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
 
   worker:
     build: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment:
-      DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:?Run bash setup.sh first to generate a database password}@db:5432/jobagent
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
       USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
       USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ENABLE_AI_SCORING: ${ENABLE_AI_SCORING:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      DIGEST_TO: ${DIGEST_TO:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      DIGEST_TIME: ${DIGEST_TIME:-08:00}
+      DIGEST_TIMEZONE: ${DIGEST_TIMEZONE:-UTC}
       GMAIL_AI_CLASSIFY: ${GMAIL_AI_CLASSIFY:-false}
       GMAIL_CREDENTIAL_DIR: /gmail
       GMAIL_QUERY: ${GMAIL_QUERY:-}
@@ -58,23 +81,29 @@ services:
       PROFILE_PATH: /config/profile.json
       ONBOARDING_DIR: /onboarding
       POLL_SECONDS: ${POLL_SECONDS:-7200}
+      TZ: ${TZ:-UTC}
     volumes:
       - ./config:/config:ro
-      - ./config/gmail:/gmail
-      - ./config/onboarding:/onboarding
+      - gmail:/gmail
+      - onboarding:/onboarding
     depends_on:
       db:
         condition: service_healthy
 
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
     depends_on:
       - api
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
 
 volumes:
   pgdata:
+  gmail:
+  onboarding:
