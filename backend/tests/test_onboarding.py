@@ -7,7 +7,8 @@ from pydantic import ValidationError
 
 import app.onboarding as onboarding_store
 from app.onboarding import extract_text, parse_resume, save_facts, load_facts, Preferences, storage_dir
-from app.scoring import prepare_packet, preference_filter
+from app.scoring import prepare_packet
+from app.preferences import salary_filter as preference_filter
 
 
 @pytest.fixture(autouse=True)

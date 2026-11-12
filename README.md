@@ -1,172 +1,65 @@
-# Job Agent — local, review-before-submit MVP
+# JobScout
 
-A working starter for **public ATS job discovery → deduplication/versioning → scoring → fact-verified application packet → manual approval and submission tracking**.
+JobScout collects public job listings, scores them against your preferences, and helps you review application materials. You decide whether to apply. It runs locally and is intended for one user.
 
-## Run on macOS, Linux, or Windows with WSL
+## Quickstart
 
-Prerequisites: Docker Desktop or Docker Engine with Compose v2, and `openssl` available on your terminal.
+Install Git and Docker Desktop on macOS or Windows, or Docker Engine with the Compose plugin on Linux. Start Docker. Windows users should run the commands in WSL; Linux users need Docker access and `openssl`. On macOS and Linux, `openssl` must be available in the terminal.
 
 ```bash
-unzip job-agent-starter.zip
-cd job-agent-starter
+git clone https://github.com/kfu95/JobScout.git
+cd JobScout
 bash setup.sh
 ```
 
-Open http://localhost:3000. The API and interactive API docs are at http://localhost:8000/docs.
+The script creates a random local database password in `.env`, builds the containers, and opens the dashboard where supported. Otherwise open http://localhost:3000. The first build may take several minutes. Upload a PDF or DOCX resume, review the extracted facts, and save your job preferences. You can configure optional integrations in the same screen. The API is at http://localhost:8000/docs.
 
-`setup.sh` generates a local database password, copies `config/profile.example.json` to `config/profile.json`, and creates user-restricted Gmail credential and onboarding data directories before starting Compose. The generated files are excluded from Git. Upload a resume and verify its extracted facts in the dashboard before preparing application packets. Run `docker compose up -d --force-recreate api worker` after changing environment variables; profile skills are read during scoring, and profile identity is read during packet preparation.
+The worker continues polling while Docker is running, including after a reboot if Docker starts automatically. A morning digest can only run while Docker is running. Gmail job-alert discovery is not yet available. The Gmail integration currently imports filtered application messages, not job alerts. Department and years of experience are saved but do not yet affect matching.
 
-## Discover jobs
+## Integrations and advanced configuration
 
-The worker automatically refreshes a public company-board directory and polls its boards. Click **Run collectors now** to start a cycle immediately; the default cycle interval is two hours.
-
-You can still add a board manually when the directory is missing it or has a stale token. In the UI, enter the company, ATS provider, and the company's board token from its public careers URL:
-
-- Greenhouse: `https://job-boards.greenhouse.io/BOARD_TOKEN` or `https://boards.greenhouse.io/BOARD_TOKEN`
-- Lever: `https://jobs.lever.co/BOARD_TOKEN`
-- Ashby: `https://jobs.ashbyhq.com/BOARD_TOKEN`
-
-Public API read requests are authenticated by neither the user nor the employer; some boards may block access or have special formats.
-
-You can add a board or trigger collection by API:
+Adzuna requires a free app ID and key, which can be saved in the dashboard or set as `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in `.env`. USAJOBS requires a free API key and the email used to request it. Save them in the dashboard, or set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`. Dashboard values take precedence. Gmail requires a Google Cloud Desktop OAuth client with the Gmail API enabled. Upload its JSON in the dashboard, save the settings, then select Connect Gmail and authorize the read-only permission. Set a Gmail query and/or labels in the dashboard before syncing; the integration is intended for filtered application messages. Restart the API and worker after editing `.env`:
 
 ```bash
-curl -X POST http://localhost:8000/api/boards \
-  -H 'Content-Type: application/json' \
-  -d '{"company":"Example","provider":"ashby","slug":"example"}'
-
-curl -X POST http://localhost:8000/api/collect
-curl 'http://localhost:8000/api/jobs?min_score=80'
-```
-
-The company above is **illustrative**; replace it with a verified board token.
-
-## Profile JSON and first-use fact seed
-
-Edit `config/profile.json` for identity, skills, and initial title, location, and annual USD salary defaults. Its `verified_experience` list is an optional one-time seed imported only when `config/onboarding/facts.json` is first created. After that, upload, edit, and verify career facts in the dashboard; later profile fact edits do not change the onboarding fact store. The PDF generator uses the verified onboarding facts exactly, not AI-invented achievements.
-
-```json
-{
-  "name": "Your Name",
-  "email": "you@example.com",
-  "location": "New York, NY",
-  "summary": "Your verified one-line professional summary.",
-  "skills": ["Python", "TypeScript", "React"],
-  "target_titles": ["senior software engineer", "senior backend engineer"],
-  "preferred_locations": ["new york", "nyc", "remote"],
-  "salary_floor": 150000,
-  "verified_experience": [
-    {
-      "id": "project-001",
-      "company": "Your Actual Employer",
-      "role": "Your Real Title",
-      "dates": "Exact Employment Dates",
-      "bullets": ["An accomplishment you can verify with the accurate metrics, if any."]
-    }
-  ]
-}
-```
-
-## AI configuration (optional)
-
-Without an OpenAI API key, **scoring is rule-based**, and packet creation selects verified facts deterministically. This remains usable without any paid AI service.
-
-To generate AI-assisted packet drafts and optionally AI job-fit scoring:
-
-1. Put `OPENAI_API_KEY=...` in `.env`.
-2. Leave `ENABLE_AI_SCORING=false` initially to avoid calling the model for every newly discovered job. Packet generation will still call the model when a key exists.
-3. To turn on AI scoring for subsequently added/changed jobs, set `ENABLE_AI_SCORING=true` and run `docker compose up -d --force-recreate api worker`.
-4. `OPENAI_MODEL` defaults to `gpt-4o-mini` and can be changed to an available compatible model.
-
-Cost and access depend on your API account/model. The code uses structured outputs with `store=False`, but job descriptions and career facts are sent to the model provider when enabled. Do not put sensitive personal data in the profile or onboarding facts unless you have reviewed data handling requirements.
-
-## Review-before-submit workflow
-
-1. Browse jobs and select a match.
-2. Click **Prepare packet** (requires at least one verified career fact).
-3. Review the selected experience and the draft answer, and download the PDF.
-4. Click **Approve materials**; this does **not** submit an application.
-5. Open the job listing, verify that it is still available, and submit through the employer's form personally; you may use a separate form-autofill extension if permitted.
-6. Click **I submitted (unverified)**, then **Confirm with receipt** when you have evidence.
-
-`/api/jobs/{id}/status` can move confirmed applications into interview/rejected/withdrawn states. Application events are recorded.
-
-## Included / not included
-
-**Included:** PDF/DOCX resume import with verified-fact review; job preferences and immediate rescoring; automatic public Greenhouse / Lever / Ashby board discovery and collection; Remotive, Remote OK, Hacker News, and optional USAJOBS and Adzuna aggregation; bounded Lever pagination; title/location/description normalization; exact normalized-URL deduplication; job-description versioning; two-successful-snapshot closure for ATS-board jobs; explainable heuristic matching; optional AI matching; optional AI fact-selection and answer drafting; verified-fact resume PDF; review dashboard; manual LinkedIn/Built In leads; optional Gmail read-only OAuth inbox sync verified against mocks; manual submission status and evidence note; periodic polling; tests.
-
-**Not yet integrated:** Semantic matching across different listing URLs; ATS-form autofill; recruiter reply classification; migrations and multiuser authentication. These require further work. LinkedIn is **not scraped** and applications are **never auto-submitted**.
-
-## Security and operations
-
-- Both HTTP ports are bound to `127.0.0.1` in `docker-compose.yml`. The API has **no authentication** and must not be publicly deployed as written.
-- Keep `.env`, `config/profile.json`, and `config/onboarding/` private. Add authentication, CSRF strategy, HTTPS and a proper secrets manager before exposing it externally.
-- Postgres persists in the `pgdata` Docker volume. `docker compose down` keeps the volume; `docker compose down -v` destroys it.
-- Read-only ATS polling uses exact allowlisted HTTPS hosts and validated board slugs. No arbitrary URL fetch or application POST is performed.
-- Jobs with matching normalized listing URLs are deduplicated across sources. Different URLs for the same job may still appear separately.
-- The current schema is created automatically on startup (`create_all`) and is a starter only: add Alembic migrations before changing schema in production.
-- OpenAI key changes require container recreation: `docker compose up -d --force-recreate api worker`.
-
-### Useful commands
-
-```bash
-docker compose ps
-docker compose logs -f api worker web
 docker compose up -d --force-recreate api worker
+```
+
+`.env` also supports optional OpenAI settings and the polling interval and `TZ` (an IANA timezone used for the daily Gmail sync, default UTC); see `.env.example`. Copy `config/profile.example.json` to `config/profile.json` if you want an advanced source of profile and initial preference defaults. Preferences saved in the dashboard take precedence. Keep these files private. Both web and API ports are bound to loopback. The API has no authentication and must not be exposed to a network.
+
+Postgres, Gmail credentials, and onboarding data are stored in named Docker volumes. Back them up before removing volumes. Existing installations that used `config/onboarding` or `config/gmail` bind mounts need to copy those directories into the new volumes before starting the updated containers. Stop the old containers first, then run these commands from the repository root:
+
+```bash
+docker compose down
+docker compose run --rm --no-deps --entrypoint sh api -c 'cp -an /config/onboarding/. /onboarding/ && cp -an /config/gmail/. /gmail/'
+```
+
+Create either missing source directory first. Existing files in the volumes are not overwritten.
+
+## Update, stop, and uninstall
+
+```bash
+git pull
+docker compose up -d --build
+docker compose logs -f api worker web
 docker compose down
 ```
 
-### Run backend tests locally
+Stopping retains your data. To uninstall and permanently delete the named volumes and their data, run `docker compose down -v`, then remove the checkout and its private `.env` and `config/profile.json`. This cannot be undone without a backup.
 
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pytest -q
-```
+## Development
 
-## Next implementation phase
+Run backend tests with `cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && pytest -q`. Applications are never submitted automatically. USAJOBS and Adzuna use the first target title for their searches. Remote region eligibility is approximate. Public board discovery can miss or duplicate listings; check the original listing before applying.
 
-See `IMPLEMENTATION_SPEC.md` for a coding-agent-ready backlog covering Gmail lifecycle-message handling, recruiter tracking, robust cross-source linking, resume templates, and production hardening.
+The public board directory uses [LastRound AI’s ATS Company Directory](https://github.com/fyrosofttech/lastroundai-hiring-data/tree/main/ats-directory), licensed CC BY 4.0. [Remotive](https://github.com/remotive-com/remote-jobs-api) supplies delayed remote listings and prohibits submitting them to other job sites.
 
-## Reference documentation
-
-- Greenhouse: https://docs.greenhouse.io/job-board
-- Lever: https://github.com/lever/postings-api
-- Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api
-- OpenAI structured output: https://developers.openai.com/api/docs/guides/structured-outputs
-
-### Gmail read-only ingestion (optional, not used for discovery)
-
-Create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen and add your Google account as a test user if the app is in testing. Create an OAuth client of type **Desktop app**, download its JSON, and save it as `config/gmail/client_secret.json`. Keep this file private. `setup.sh` creates the credential directory with user-only permissions; before starting Compose manually, run `mkdir -p config/gmail && chmod 700 config/gmail`. The Compose API disables access logs to avoid logging OAuth callback codes. The API and worker share this directory; the refresh token is stored there in a user-restricted file excluded from Git.
-
-Set `GMAIL_QUERY` and/or `GMAIL_LABELS` in `.env` before starting Compose. If the services are already running, apply these values with `docker compose up -d --force-recreate api worker`. Labels are comma-separated Gmail label IDs; a query uses Gmail search syntax. Both filters apply when both are present. For example, `GMAIL_QUERY=subject:(application OR interview OR rejection)` limits ingestion to likely application-lifecycle messages. Filters targeting Spam, Trash, or `in:anywhere` are rejected, and a label-only preflight excludes Spam and Trash before fetching message metadata or snippets. Time-relative operators such as `after:`, `before:`, `older:`, `newer:`, `older_than:`, and `newer_than:` are unsupported because incremental sync only processes new mailbox events. Configure filters carefully because matching message metadata and a short snippet are stored in the database. Raw message bodies and attachments are not retained.
-
-Start the application, then run `curl -X POST http://localhost:8000/api/gmail/connect` and open the returned `authorization_url` on the same machine. Approve the Gmail read-only permission; Google redirects to `http://127.0.0.1:8000/`. The credential directory is bound to the first authorized mailbox; reconnecting the same mailbox is supported, while authorizing a different mailbox is rejected to protect existing messages and sync state. Check `GET /api/gmail/status` and trigger a sync manually with `POST /api/gmail/sync`. The worker runs Gmail sync daily at approximately 06:00 America/New_York and follows daylight saving time; `POLL_SECONDS` continues to control only ATS collection. Gmail performs a full filtered scan on first sync or when the history cursor expires. Otherwise it processes only new messages reported by Gmail history, including after filter changes, so changing filters does not backfill older mail. Query candidates are checked with narrowly time-bounded Gmail searches, while labels are checked from message metadata. Reconnect the same mailbox if credentials are revoked or expired. This integration is verified with mocked Gmail responses, not a live Google account. This local API has no authentication and must not be exposed publicly without the protections described above.
-
-### Automatic discovery
-
-Collection refreshes a directory of public Greenhouse, Lever, and Ashby boards weekly and polls up to 300 boards per cycle in rotation. Manual boards still work. The directory comes from [LastRound AI's ATS Company Directory](https://github.com/fyrosofttech/lastroundai-hiring-data/tree/main/ats-directory), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see its [pay transparency study](https://lastroundai.com/blog/salary-transparency-study-2026). Tokens may become stale and this dataset is not a complete list. Requests use a roughly one-second interval with jitter and honor Retry-After. Failed boards do not close their postings.
-
-[Remotive's public API](https://github.com/remotive-com/remote-jobs-api) supplies remote software jobs, extending New York searches to eligible remote roles without a key. Listings link to Remotive and show its name as the provider. Its public feed is delayed 24 hours and is fetched at most once per six hours, including after failures. Its terms prohibit submitting these jobs to other job sites. [USAJOBS](https://developer.usajobs.gov/api-reference/get-api-search) supplies federal software roles. Request a free key at the [API request page](https://developer.usajobs.gov/apirequest/index), then set `USAJOBS_API_KEY` and `USAJOBS_EMAIL` in `.env`; the email must be the one used for the key. If either is missing, USAJOBS is skipped with a logged notice. No personal email is built in.
-
-[Remote OK](https://remoteok.com/api) supplies remote jobs without a key. It is polled at most once every six hours; its API asks that each listing name Remote OK and link back to its listing. [Hacker News Search](https://hn.algolia.com/api) supplies comments from the latest Who is hiring thread, polled at most once every six hours. Each top-level comment is treated as one lead and links back to the comment; its free-form heading may contain multiple jobs or lack enough information to match preferences.
-
-[Adzuna](https://developer.adzuna.com/docs/search) supplies US IT listings. Register for a free API ID and key and set `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in `.env`, then recreate the API and worker containers. It is skipped with a logged notice when either is missing. One request is made at most every six hours, including after failure; only the 50 most recent results are fetched, and descriptions are excerpts. The API account's limits apply. [Adzuna's terms](https://developer.adzuna.com/docs/terms_of_service) permit personal job search and require attribution; commercial or organizational use may require a license. Predicted salaries are not used for filtering.
-
-Saved dashboard preferences are the single source for discovery filtering and scoring. Until preferences are saved, `config/profile.json` supplies the initial `target_titles`, `preferred_locations`, and optional annual `salary_floor` (USD). Each collection run uses one preference snapshot. When locations are selected, a listing is eligible only if its location matches or it is remote and Remote is a selected work mode. Known mismatches already stored are hidden, not deleted; new mismatches are not stored. Listings with unknown salary remain eligible, and salary filtering applies only where an annual maximum is recognizable. Results are deduplicated by source ID and normalized listing URL, although aggregator links may differ from an employer's direct URL. Aggregator listings are not automatically marked closed yet; verify availability on the linked listing. Directory rotation can take multiple days. Discovery does not use Gmail alerts.
-
-Deferred: concurrent collection coordination across API and worker, more complete salary and remote eligibility parsing, improved cross-provider identity matching, and closing aggregator listings absent from complete feeds.
-
-### Resume and preferences
-
-Upload a text-based PDF or DOCX in the dashboard. Extracted experience and skills are drafts: review and edit each fact, then check and save its verification before preparing a packet. Existing `config/profile.json` verified experience is imported only when the onboarding fact store is first created. The source document is discarded after extraction. Facts and preferences are stored in `config/onboarding/`, excluded from Git and restricted to the local user. Keep a private backup of this directory. Scanned PDFs require text recognition before upload.
-
-Preferences affect stored job scores and visibility immediately. Target-title phrases and selected locations act as hard filters, with selected Remote work admitting remote listings outside those locations. Selected seniority and work-mode terms raise rankings when matched. A stated salary below the annual USD floor removes a match. Listings without recognizable salary remain visible. Salary detection recognizes explicit USD salary, base-pay, pay-range, and compensation-range text plus provider-supplied annual USD salary maxima; it does not treat foreign currencies, stipends, bonuses, equity, nonannual rates, or unlabeled amounts as annual salary. Review compensation in the original listing.
+[Remote OK](https://remoteok.com/api) and [Hacker News Search](https://hn.algolia.com/api) supply additional listings. Hacker News comments are free-form and may describe multiple jobs. [Adzuna](https://developer.adzuna.com/docs/search) supplies US listings, limited to the 50 most recent results per request; descriptions are excerpts and predicted salaries are not used for filtering. Its [terms](https://developer.adzuna.com/docs/terms_of_service) permit personal job search; commercial or organizational use may require a license.
 
 ### Morning digest
 
-Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `DIGEST_TO` in `.env`, then restart the API and worker. For Gmail, use `smtp.gmail.com`, port `587`, your Gmail address as the username, and a Google app password. `SMTP_FROM` defaults to the username. This uses SMTP with STARTTLS and does not change Gmail OAuth permissions.
+Enter the SMTP host, port, username, password, sender and recipient in the dashboard and save. For Gmail, use `smtp.gmail.com`, port `587`, your Gmail address and a Google app password. SMTP uses STARTTLS and does not change Gmail OAuth permissions. The dashboard's **Send test digest** button checks delivery without marking jobs as sent.
 
-The worker sends new matched open jobs once daily at `DIGEST_TIME` (24-hour `HH:MM`, default `08:00`) in `DIGEST_TIMEZONE` (IANA timezone, default `America/New_York`). Set `DASHBOARD_URL` to the address you use to reach the dashboard from your email device. No email is sent when there are no new matches. Use **Send test digest** on the dashboard to verify delivery; test emails do not mark jobs as sent. Opening a job only displays it. Preparing a packet remains a separate action.
+The worker sends new matched open jobs daily at `DIGEST_TIME` (24-hour `HH:MM`, default `08:00`) in `DIGEST_TIMEZONE` (IANA timezone, default `UTC`). Set these in `.env` and recreate the worker to choose your local morning. Set `DASHBOARD_URL` to the address you use to reach the dashboard from your email device. No email is sent when there are no new matches.
+
+Alternatively configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` and `DIGEST_TO` in `.env`. Dashboard values take precedence. Keep Docker running for scheduled delivery.
+
+Gmail filtering excludes Spam and Trash, and does not support time-relative search operators. Matching message metadata and snippets are retained; raw bodies and attachments are not. Changing filters does not backfill older mail. The integration is verified with mocks, not a live Google account.

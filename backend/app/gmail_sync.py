@@ -15,6 +15,7 @@ from .gmail_auth import (
     mailbox_needs_binding,
 )
 from .models import GmailMessage, GmailSyncState
+from .settings import setting
 
 SPAM_TRASH_QUERY = re.compile(
     r"(?:^|[\s({])(?:in|label):(spam|trash|anywhere)(?=$|[\s)}])", re.IGNORECASE
@@ -29,8 +30,8 @@ class GmailSyncError(Exception):
     pass
 
 def filters():
-    query = os.getenv("GMAIL_QUERY", "").strip()
-    labels = [label.strip() for label in os.getenv("GMAIL_LABELS", "").split(",") if label.strip()]
+    query = setting("GMAIL_QUERY").strip()
+    labels = [label.strip() for label in setting("GMAIL_LABELS").split(",") if label.strip()]
     operators = QUOTED_QUERY.sub("", query)
     if not query and not labels:
         raise GmailSyncError("Set GMAIL_QUERY or GMAIL_LABELS before syncing")

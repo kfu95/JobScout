@@ -25,12 +25,14 @@ class Fact(BaseModel):
 class Preferences(BaseModel):
     target_titles: list[str] = Field(default_factory=list)
     seniority: list[str] = Field(default_factory=list)
+    departments: list[str] = Field(default_factory=list)
+    years_experience: float | None = Field(default=None, ge=0)
     locations: list[str] = Field(default_factory=list)
     work_modes: list[str] = Field(default_factory=list)
     salary_floor: float | None = Field(default=None, ge=0)
     currency: Literal["USD"] = "USD"
 
-    @field_validator("target_titles", "seniority", "locations", "work_modes")
+    @field_validator("target_titles", "seniority", "departments", "locations", "work_modes")
     @classmethod
     def clean_terms(cls, terms):
         return [term.strip() for term in terms if term.strip()]

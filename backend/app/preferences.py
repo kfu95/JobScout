@@ -20,7 +20,7 @@ AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL 
 NON_ANNUAL_PERIOD_PATTERN = re.compile(r"(?:/|\b(?:per|a|an)\s+)(?:hour|hr|day|week|month)\b|\b(?:hourly|daily|weekly|monthly)\b", re.I)
 PROFILE_PREFERENCE_FIELDS = {
     "target_titles", "preferred_locations", "locations", "seniority",
-    "work_modes", "salary_floor", "currency",
+    "work_modes", "salary_floor", "currency", "departments", "years_experience",
 }
 
 
@@ -112,22 +112,15 @@ def eligibility(posting, preferences):
     region = str(posting.get("remote_region", "")).lower().strip()
     if not region and location.startswith("remote "):
         region = location.removeprefix("remote ").strip()
-    if region and not any(
-        term in region
-        for term in ("anywhere", "worldwide", "global", "united states", "usa", "u.s.", "north america", "new york", "nyc")
-    ):
-        return False, "Outside eligible remote region"
+    if region and not any(term in region for term in ("anywhere", "worldwide", "global", "united states", "usa", "u.s.", "north america")):
+        locations = preferences.get("locations", [])
+        if locations and not matches_phrase(region, locations):
+            return False, "Outside eligible remote region"
 
     title = str(posting.get("title", "")).lower()
     target_titles = [term.strip() for term in preferences.get("target_titles", []) if term.strip()]
-    if target_titles:
-        if not matches_phrase(title, target_titles):
-            return False, "Outside target titles"
-    else:
-        if re.search(r"\b(director|manager|recruiter|sales|marketing|intern|designer)\b", title):
-            return False, "Non-target job family or level"
-        if not any(pattern in title for pattern in ("engineer", "software developer", "software architect")):
-            return False, "Outside software engineering"
+    if target_titles and not matches_phrase(title, target_titles):
+        return False, "Outside target titles"
 
     locations = preferences.get("locations", [])
     remote_rescue = matches_phrase(location, ["remote"]) and matches_phrase(

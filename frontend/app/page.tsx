@@ -71,7 +71,7 @@ export default function Dashboard() {
     <Onboarding onSaved={async()=>{await reload(); if(selected) await selectJob(selected.id);}}/>
     <div className="columns">
       <section className="panel feed"><div className="sectionTitle"><h2>Job feed</h2><span>{jobs.length} shown</span></div>
-        <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, NYC…" />
+        <div className="filters"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search roles, companies, locations…" />
           <label>Min score <select value={minScore} onChange={e=>setMinScore(Number(e.target.value))}><option value="0">All</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option></select></label></div>
         <div className="jobList">{jobs.length===0 && <p className="muted">No matching jobs yet. Run collection to discover jobs.</p>}
           {jobs.map(j=><div key={j.id}><button className={`job ${selected?.id===j.id?"chosen":""}`} onClick={()=>selectJob(j.id)}>

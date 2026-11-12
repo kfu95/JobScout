@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 type Fact = {id:string; role:string; company:string; dates:string; bullets:string[]; skills:string[]; verified:boolean};
-type Preferences = {target_titles:string[]; seniority:string[]; locations:string[]; work_modes:string[]; salary_floor:number|null; currency:"USD"};
-const fields: [keyof Preferences, string][] = [["target_titles","Target titles"],["seniority","Seniority"],["locations","Locations"],["work_modes","Work modes (remote, hybrid, onsite)"]];
+type Preferences = {target_titles:string[]; seniority:string[]; departments:string[]; years_experience:number|null; locations:string[]; work_modes:string[]; salary_floor:number|null; currency:"USD"};
+const fields: [keyof Preferences, string][] = [["target_titles","Target titles"],["seniority","Seniority"],["departments","Departments"],["locations","Locations"],["work_modes","Work modes (remote, hybrid, onsite)"]];
 async function request(path:string, options?:RequestInit) {
   const response = await fetch(BASE + path, options);
   if (!response.ok) { const body = await response.json(); throw new Error(body.detail || response.statusText); }
@@ -12,7 +12,11 @@ async function request(path:string, options?:RequestInit) {
 }
 export default function Onboarding({onSaved}:{onSaved:()=>void|Promise<void>}) {
   const [facts,setFacts] = useState<Fact[]>([]); const [prefs,setPrefs] = useState<Preferences|null>(null); const [notice,setNotice] = useState(""); const [savingPrefs,setSavingPrefs] = useState(false);
+  const [settings,setSettings] = useState<Record<string,string>>({});
   const savingPrefsRef = useRef(false);
+  async function saveSettings(e:React.FormEvent) { e.preventDefault(); try { await request("/api/onboarding/integrations",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(settings)}); setSettings({}); setNotice("Integration settings saved."); } catch(e) { setNotice(String(e)); } }
+  async function connectGmail() { try { const data = await request("/api/gmail/connect",{method:"POST"}); window.open(data.authorization_url,"_blank","noopener,noreferrer"); } catch(e) { setNotice(String(e)); } }
+
   async function refresh() { const data = await request("/api/onboarding"); setFacts(data.facts); setPrefs(data.preferences); }
   useEffect(()=>{refresh().catch(e=>setNotice(e.message));},[]);
   async function upload(e:React.FormEvent<HTMLFormElement>) { e.preventDefault(); try { const form = e.currentTarget; await request("/api/onboarding/resume",{method:"POST",body:new FormData(form)}); form.reset(); await refresh(); setNotice("Resume imported. Review each draft fact."); } catch(e) {setNotice(String(e));} }
@@ -28,6 +32,13 @@ export default function Onboarding({onSaved}:{onSaved:()=>void|Promise<void>}) {
       <label>Skills (comma separated)<input value={fact.skills.join(", ")} onChange={e=>edit(i,{skills:e.target.value.split(",").map(s=>s.trim()),verified:false})}/></label>
       <label><input type="checkbox" checked={fact.verified} onChange={e=>edit(i,{verified:e.target.checked})}/> I verified this fact</label><button type="button" onClick={()=>saveFact(fact)}>Save fact</button></div>)}
     {prefs && <form className="stack" onSubmit={savePrefs}><h3>Job preferences</h3>{fields.map(([key,label])=><label key={key}>{label} (comma separated)<input value={(prefs[key] as string[]).join(", ")} onChange={e=>setPrefs({...prefs,[key]:e.target.value.split(",").map(s=>s.trimStart())})}/></label>)}
-      <label>Annual salary floor (USD)<input type="number" min="0" value={prefs.salary_floor ?? ""} onChange={e=>setPrefs({...prefs,salary_floor:e.target.value ? Number(e.target.value) : null})}/></label><button disabled={savingPrefs}>{savingPrefs ? "Saving preferences…" : "Save preferences"}</button></form>}
+      <label>Years of experience<input type="number" min="0" value={prefs.years_experience ?? ""} onChange={e=>setPrefs({...prefs,years_experience:e.target.value ? Number(e.target.value) : null})}/></label><label>Annual salary floor (USD)<input type="number" min="0" value={prefs.salary_floor ?? ""} onChange={e=>setPrefs({...prefs,salary_floor:e.target.value ? Number(e.target.value) : null})}/></label><button disabled={savingPrefs}>{savingPrefs ? "Saving preferences…" : "Save preferences"}</button></form>}
+    <details><summary>Optional integrations</summary><p className="muted">USAJOBS, Adzuna, Gmail, and the SMTP digest are optional. Department and years of experience are saved but do not yet affect matching. Leave a field blank to keep its saved value.</p>
+      <form className="stack" onSubmit={saveSettings}>
+        {[["usajobs_api_key","USAJOBS API key"],["usajobs_email","USAJOBS account email"],["adzuna_app_id","Adzuna app ID"],["adzuna_api_key","Adzuna API key"],["smtp_host","SMTP host"],["smtp_port","SMTP port"],["smtp_username","SMTP username"],["smtp_password","SMTP password"],["smtp_from","Digest sender email"],["smtp_to","Digest recipient email"],["gmail_query","Gmail search query"],["gmail_labels","Gmail labels (comma separated)"]].map(([key,label])=><label key={key}>{label}<input type={key.includes("key") || key.includes("password") ? "password" : "text"} value={settings[key] || ""} onChange={e=>setSettings({...settings,[key]:e.target.value})}/></label>)}
+        <label>Gmail Desktop OAuth client JSON<input type="file" accept="application/json,.json" onChange={async e=>{const file=e.target.files?.[0]; if(file) setSettings({...settings,gmail_client_json:await file.text()});}}/></label>
+        <button>Save integration settings</button>
+      </form><button type="button" onClick={connectGmail}>Connect Gmail after saving</button>
+    </details>
   </section>;
 }
