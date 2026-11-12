@@ -18,6 +18,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
       USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
       USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -54,6 +56,8 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       DATABASE_URL: postgresql+psycopg://jobagent:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/jobagent
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
       USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
       USAJOBS_EMAIL: ${USAJOBS_EMAIL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

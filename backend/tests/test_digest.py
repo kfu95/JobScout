@@ -54,7 +54,7 @@ def test_digest_sends_ranked_jobs_once_and_test_does_not_mark(setup):
     assert send_digest(db, test=True, transport=Mail)["count"] == 2
     assert not db.scalars(select(DigestJob)).all()
     assert send_digest(db, transport=Mail) == {"status": "sent", "count": 2}
-    content = Mail.messages[-1].get_content()
+    content = Mail.messages[-1].get_body(preferencelist=("plain",)).get_content()
     assert content.index("Job 90") < content.index("Job 20")
     assert "Remote" in content and "$150,000" in content and "ashby" in content
     assert "http://localhost:3000/?job=" in content
@@ -78,3 +78,21 @@ def test_schedule_and_unconfigured(setup, monkeypatch):
     assert seconds_until_digest(datetime(2026, 1, 1, 12, tzinfo=timezone.utc)) == 5400
     monkeypatch.delenv("SMTP_HOST")
     assert send_digest(setup, transport=Mail)["status"] == "unconfigured"
+
+
+def test_digest_attributes_aggregator_listings(setup):
+    db = setup
+    for provider, url in (("adzuna", "https://www.adzuna.com/job/1"), ("remoteok", "https://remoteok.com/remote-jobs/2")):
+        board = Board(company="Example", provider=provider, slug=provider)
+        db.add(board)
+        db.flush()
+        db.add(Job(board_id=board.id, external_id=provider, title="Engineer", location="Remote", description="", apply_url=url, hash=provider, score=80))
+    db.commit()
+    send_digest(db, test=True, transport=Mail)
+    message = Mail.messages[-1]
+    html_body = message.get_body(preferencelist=("html",)).get_content()
+    plain_body = message.get_body(preferencelist=("plain",)).get_content()
+    assert 'href="https://www.adzuna.com/"' in html_body
+    assert "min-width:116px;min-height:23px" in html_body
+    assert 'href="https://remoteok.com/remote-jobs/2"' in html_body
+    assert "https://remoteok.com/remote-jobs/2" in plain_body
